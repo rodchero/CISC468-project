@@ -1,0 +1,22 @@
+# Error code constants — must match between Python and Rust clients
+UNSUPPORTED_PROTOCOL_VERSION = "UNSUPPORTED_PROTOCOL_VERSION"
+INVALID_MESSAGE = "INVALID_MESSAGE"
+HANDSHAKE_FAILED = "HANDSHAKE_FAILED"
+AUTH_FAILED = "AUTH_FAILED"
+UNKNOWN_PEER = "UNKNOWN_PEER"
+UNTRUSTED_KEY = "UNTRUSTED_KEY"
+KEY_CHANGED = "KEY_CHANGED"
+CONSENT_DENIED = "CONSENT_DENIED"
+FILE_NOT_FOUND = "FILE_NOT_FOUND"
+FILE_HASH_MISMATCH = "FILE_HASH_MISMATCH"
+INVALID_FILE_SIGNATURE = "INVALID_FILE_SIGNATURE"
+DECRYPTION_FAILED = "DECRYPTION_FAILED"
+TRANSFER_INTERRUPTED = "TRANSFER_INTERRUPTED"
+KEY_ROTATION_INVALID = "KEY_ROTATION_INVALID"
+
+
+class P2PError(Exception):
+    def __init__(self, error_code, description=""):
+        self.error_code = error_code
+        self.description = description
+        super().__init__(f"{error_code}: {description}" if description else error_code)

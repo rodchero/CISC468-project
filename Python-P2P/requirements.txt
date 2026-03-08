@@ -1,0 +1,7 @@
+cryptography
+zeroconf
+protobuf
+argon2-cffi
+grpcio-tools
+pytest
+pytest-asyncio
