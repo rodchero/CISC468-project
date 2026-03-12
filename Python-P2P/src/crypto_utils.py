@@ -1,6 +1,9 @@
 import hashlib
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidSignature
 
 
@@ -44,3 +47,36 @@ def sha256(data: bytes) -> bytes:
 def fingerprint(public_key_bytes: bytes) -> str:
     digest = sha256(public_key_bytes)
     return ":".join(f"{b:02x}" for b in digest)
+
+
+# --- X25519 ---
+
+def generate_ephemeral_keypair():
+    priv = X25519PrivateKey.generate()
+    pub = priv.public_key()
+    return priv, pub
+
+
+def get_ephemeral_public_bytes(public_key) -> bytes:
+    return public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def compute_shared_secret(my_private, their_public_bytes: bytes) -> bytes:
+    their_pub = X25519PublicKey.from_public_bytes(their_public_bytes)
+    return my_private.exchange(their_pub)
+
+
+# --- HKDF ---
+
+HKDF_SALT = b"p2pfileshare-v1-salt"
+HKDF_INFO = b"p2pfileshare-v1-session-keys"
+
+def derive_session_keys(shared_secret: bytes):
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=64,
+        salt=HKDF_SALT,
+        info=HKDF_INFO,
+    )
+    key_material = hkdf.derive(shared_secret)
+    return key_material[:32], key_material[32:]
