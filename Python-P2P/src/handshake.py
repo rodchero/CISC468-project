@@ -2,7 +2,9 @@ import struct
 from src.generated.p2pfileshare_pb2 import P2PMessage
 from src.crypto_utils import (
     get_public_key_bytes, get_ephemeral_public_bytes,
-    generate_ephemeral_keypair, sha256,
+    generate_ephemeral_keypair, sha256, sign, verify,
+    compute_shared_secret as x25519_shared_secret,
+    derive_session_keys as hkdf_derive,
 )
 from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION
 
@@ -27,6 +29,9 @@ class Handshake:
         self.peer_display_name = None
 
         self.transcript_hash = None
+        self.shared_secret = None
+        self.send_key = None
+        self.recv_key = None
 
     def create_hello(self) -> P2PMessage:
         msg = P2PMessage()
@@ -66,3 +71,32 @@ class Handshake:
         transcript = self.build_transcript()
         self.transcript_hash = sha256(transcript)
         return self.transcript_hash
+
+    def sign_transcript(self) -> bytes:
+        return sign(self.identity_priv, self.transcript_hash)
+
+    def create_auth_message(self) -> P2PMessage:
+        sig = self.sign_transcript()
+        msg = P2PMessage()
+        msg.auth_signature.signature = sig
+        return msg
+
+    def verify_peer_signature(self, msg: P2PMessage) -> bool:
+        sig = msg.auth_signature.signature
+        return verify(self.peer_identity_pub_bytes, sig, self.transcript_hash)
+
+    def compute_shared_secret(self):
+        self.shared_secret = x25519_shared_secret(
+            self.ephemeral_priv, self.peer_ephemeral_pub_bytes
+        )
+        return self.shared_secret
+
+    def derive_session_keys(self):
+        key_i2r, key_r2i = hkdf_derive(self.shared_secret)
+        if self.is_initiator:
+            self.send_key = key_i2r
+            self.recv_key = key_r2i
+        else:
+            self.send_key = key_r2i
+            self.recv_key = key_i2r
+        return self.send_key, self.recv_key
