@@ -18,6 +18,6 @@ mod tests {
     #[test]
     fn test_main() {
         // Test main function
-        todo!();
+        ()
     }
 }

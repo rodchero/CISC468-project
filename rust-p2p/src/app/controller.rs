@@ -37,6 +37,7 @@ fn event_loop(state: &mut AppState) -> Result<(), AppError> {
     Ok(())
 }
 
+// temporary function to simulate peer discovery, delete later
 fn simulate_peer_discovery(state: &mut AppState) {
     println!("Discovered peer!");
 
