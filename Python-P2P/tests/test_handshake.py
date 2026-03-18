@@ -1,6 +1,7 @@
+import asyncio
 import pytest
 from src.crypto_utils import generate_identity_keypair
-from src.handshake import Handshake
+from src.handshake import Handshake, perform_handshake_initiator, perform_handshake_responder
 from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION
 from src.generated.p2pfileshare_pb2 import P2PMessage
 
@@ -152,3 +153,40 @@ def test_session_keys_cross_match():
     assert i_send == r_recv  # initiator's send = responder's recv
     assert i_recv == r_send  # initiator's recv = responder's send
     assert len(i_send) == 32
+
+
+# --- Day 8: full async handshake over TCP ---
+
+@pytest.mark.asyncio
+async def test_full_handshake_over_tcp():
+    priv_a, pub_a = generate_identity_keypair()
+    priv_b, pub_b = generate_identity_keypair()
+
+    result = {}
+
+    async def server_handler(reader, writer):
+        session = await perform_handshake_responder(reader, writer, priv_b, pub_b, "bob")
+        result["server"] = session
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    client_session = await perform_handshake_initiator(reader, writer, priv_a, pub_a, "alice")
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    server_session = result["server"]
+
+    # Keys should cross-match
+    assert client_session.send_key == server_session.recv_key
+    assert client_session.recv_key == server_session.send_key
+
+    # Peer info should be correct
+    assert client_session.peer_display_name == "bob"
+    assert server_session.peer_display_name == "alice"
+    assert client_session.is_initiator is True
+    assert server_session.is_initiator is False

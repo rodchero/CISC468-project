@@ -6,7 +6,9 @@ from src.crypto_utils import (
     compute_shared_secret as x25519_shared_secret,
     derive_session_keys as hkdf_derive,
 )
-from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION
+from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION, AUTH_FAILED
+from src.framing import send_message, recv_message
+from src.session import Session
 
 PROTOCOL_VERSION = 1
 
@@ -100,3 +102,49 @@ class Handshake:
             self.send_key = key_r2i
             self.recv_key = key_i2r
         return self.send_key, self.recv_key
+
+
+async def perform_handshake_initiator(reader, writer, identity_priv, identity_pub, display_name) -> Session:
+    hs = Handshake(identity_priv, identity_pub, display_name, is_initiator=True)
+
+    # 1. Send our Hello, then receive peer's Hello
+    await send_message(writer, hs.create_hello())
+    peer_hello = await recv_message(reader)
+    hs.process_hello(peer_hello)
+
+    # 2. Compute shared secret and transcript
+    hs.compute_shared_secret()
+    hs.compute_transcript_hash()
+
+    # 3. Send our AuthSignature, then receive peer's
+    await send_message(writer, hs.create_auth_message())
+    peer_auth = await recv_message(reader)
+    if not hs.verify_peer_signature(peer_auth):
+        raise P2PError(AUTH_FAILED, "Peer signature verification failed")
+
+    # 4. Derive keys and return session
+    send_key, recv_key = hs.derive_session_keys()
+    return Session(send_key, recv_key, hs.peer_identity_pub_bytes, hs.peer_display_name, True)
+
+
+async def perform_handshake_responder(reader, writer, identity_priv, identity_pub, display_name) -> Session:
+    hs = Handshake(identity_priv, identity_pub, display_name, is_initiator=False)
+
+    # 1. Receive peer's Hello, then send ours
+    peer_hello = await recv_message(reader)
+    hs.process_hello(peer_hello)
+    await send_message(writer, hs.create_hello())
+
+    # 2. Compute shared secret and transcript
+    hs.compute_shared_secret()
+    hs.compute_transcript_hash()
+
+    # 3. Receive peer's AuthSignature, verify, then send ours
+    peer_auth = await recv_message(reader)
+    if not hs.verify_peer_signature(peer_auth):
+        raise P2PError(AUTH_FAILED, "Peer signature verification failed")
+    await send_message(writer, hs.create_auth_message())
+
+    # 4. Derive keys and return session
+    send_key, recv_key = hs.derive_session_keys()
+    return Session(send_key, recv_key, hs.peer_identity_pub_bytes, hs.peer_display_name, False)
