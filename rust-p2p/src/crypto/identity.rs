@@ -1,5 +1,5 @@
 use ed25519_dalek::{Signer, Verifier, SigningKey, VerifyingKey, Signature as DalekSig};
-use rand::rngs::OsRng;
+use rand::{RngCore, rngs::OsRng};
 
 use crate::crypto::types::*;
 
@@ -10,7 +10,9 @@ pub struct IdentityKeypair {
 
 impl IdentityKeypair {
     pub fn generate() -> Self {
-        let private = SigningKey::generate(&mut OsRng);
+        let mut rng_bytes = [0u8; 32];
+        OsRng::fill_bytes(&mut OsRng, &mut rng_bytes);
+        let private = SigningKey::from_bytes(&rng_bytes);
         let public = private.verifying_key();
 
         Self { private, public }

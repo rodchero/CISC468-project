@@ -1,6 +1,6 @@
 use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::{SaltString};
-use rand_core::OsRng;
+use rand::rngs::OsRng;
 
 use crate::crypto::types::*;
 
