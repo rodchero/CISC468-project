@@ -2,7 +2,7 @@ import os
 import struct
 import time
 from src.generated.p2pfileshare_pb2 import FileMetadata
-from src.crypto_utils import sha256, sign, get_public_key_bytes
+from src.crypto_utils import sha256, sign, verify, get_public_key_bytes
 
 
 def compute_file_id(filename: str, file_hash: bytes, file_size: int) -> bytes:
@@ -10,6 +10,35 @@ def compute_file_id(filename: str, file_hash: bytes, file_size: int) -> bytes:
     return sha256(
         filename.encode("utf-8") + file_hash + struct.pack(">Q", file_size)
     )
+
+
+def build_canonical_metadata_bytes(metadata) -> bytes:
+    # Canonical byte order for signing/verifying — Rust side must match exactly:
+    # owner_fingerprint(32) || file_id(32) || filename_utf8 || file_size(8B BE) || file_hash(32) || timestamp(8B BE)
+    return (
+        metadata.owner_fingerprint
+        + metadata.file_id
+        + metadata.filename.encode("utf-8")
+        + struct.pack(">Q", metadata.file_size)
+        + metadata.file_hash
+        + struct.pack(">Q", metadata.timestamp)
+    )
+
+
+def verify_file_metadata(metadata, owner_pubkey_bytes: bytes) -> bool:
+    canonical = build_canonical_metadata_bytes(metadata)
+    return verify(owner_pubkey_bytes, metadata.owner_signature, canonical)
+
+
+def verify_file_integrity(filepath, metadata) -> bool:
+    with open(filepath, "rb") as f:
+        data = f.read()
+    return sha256(data) == metadata.file_hash
+
+
+def verify_file_id(metadata) -> bool:
+    expected = compute_file_id(metadata.filename, metadata.file_hash, metadata.file_size)
+    return metadata.file_id == expected
 
 
 class FileManager:
@@ -31,18 +60,6 @@ class FileManager:
         owner_fp = sha256(self.identity_pub_bytes)
         ts = int(time.time())
 
-        # Canonical bytes for signing — Rust side must match this exact order:
-        # owner_fingerprint(32) || file_id(32) || filename_utf8 || file_size(8B BE) || file_hash(32) || timestamp(8B BE)
-        canonical = (
-            owner_fp
-            + file_id
-            + filename.encode("utf-8")
-            + struct.pack(">Q", file_size)
-            + file_hash
-            + struct.pack(">Q", ts)
-        )
-        sig = sign(self.identity_priv, canonical)
-
         meta = FileMetadata()
         meta.owner_fingerprint = owner_fp
         meta.file_id = file_id
@@ -50,7 +67,9 @@ class FileManager:
         meta.file_size = file_size
         meta.file_hash = file_hash
         meta.timestamp = ts
-        meta.owner_signature = sig
+
+        canonical = build_canonical_metadata_bytes(meta)
+        meta.owner_signature = sign(self.identity_priv, canonical)
         return meta
 
     def scan_files(self):
@@ -67,3 +86,11 @@ class FileManager:
     def get_file_path(self, file_id):
         entry = self.files.get(file_id)
         return entry[0] if entry else None
+
+    def store_third_party_metadata(self, metadata):
+        """Store metadata from another owner so we can serve their files too."""
+        file_id = metadata.file_id
+        # We might not have the file yet, so filepath can be None
+        existing = self.files.get(file_id)
+        filepath = existing[0] if existing else None
+        self.files[file_id] = (filepath, metadata)
