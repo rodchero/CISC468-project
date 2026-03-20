@@ -1,12 +1,17 @@
 import os
 import asyncio
+import tempfile
+from unittest.mock import patch
 import pytest
 from src.session import Session
 from src.protocol import (
     request_file_list, handle_file_list_request,
+    request_file, handle_file_request,
     send_app_message, recv_app_message, FILE_LIST_REQUEST,
 )
 from src.generated.p2pfileshare_pb2 import FileMetadata
+from src.file_manager import FileManager
+from src.crypto_utils import generate_identity_keypair
 
 
 def _make_session_pair():
@@ -83,3 +88,85 @@ async def test_empty_file_list():
     srv.close()
 
     assert len(files) == 0
+
+
+def _make_file_manager_with_file():
+    """Create a FileManager with one test file, return (fm, file_id, tmpdir)."""
+    priv, pub = generate_identity_keypair()
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "secret.txt")
+    with open(path, "wb") as f:
+        f.write(b"secret data")
+    fm = FileManager(tmpdir, priv, pub)
+    fm.scan_files()
+    file_id = fm.get_file_list()[0].file_id
+    return fm, file_id, tmpdir
+
+
+@pytest.mark.asyncio
+async def test_file_request_approved():
+    client_sess, server_sess = _make_session_pair()
+    fm, file_id, _ = _make_file_manager_with_file()
+
+    async def server_handler(reader, writer):
+        with patch("builtins.input", return_value="y"):
+            await handle_file_request(server_sess, reader, writer, fm)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    result = await request_file(client_sess, reader, writer, file_id)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_file_request_denied():
+    client_sess, server_sess = _make_session_pair()
+    fm, file_id, _ = _make_file_manager_with_file()
+
+    async def server_handler(reader, writer):
+        with patch("builtins.input", return_value="n"):
+            await handle_file_request(server_sess, reader, writer, fm)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    result = await request_file(client_sess, reader, writer, file_id)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_file_request_not_found():
+    client_sess, server_sess = _make_session_pair()
+    fm, _, _ = _make_file_manager_with_file()
+    fake_id = b'\xff' * 32  # doesn't exist
+
+    async def server_handler(reader, writer):
+        await handle_file_request(server_sess, reader, writer, fm)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    result = await request_file(client_sess, reader, writer, fake_id)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    assert result is False
