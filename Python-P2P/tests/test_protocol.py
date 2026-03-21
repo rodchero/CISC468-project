@@ -7,11 +7,13 @@ from src.session import Session
 from src.protocol import (
     request_file_list, handle_file_list_request,
     request_file, handle_file_request,
+    send_file, receive_file,
     send_app_message, recv_app_message, FILE_LIST_REQUEST,
 )
 from src.generated.p2pfileshare_pb2 import FileMetadata
 from src.file_manager import FileManager
-from src.crypto_utils import generate_identity_keypair
+from src.crypto_utils import generate_identity_keypair, get_public_key_bytes
+from src.errors import P2PError, FILE_HASH_MISMATCH
 
 
 def _make_session_pair():
@@ -170,3 +172,99 @@ async def test_file_request_not_found():
     srv.close()
 
     assert result is False
+
+
+# --- Day 15: chunked file transfer ---
+
+def _make_file_manager_with_content(content: bytes):
+    """Create a FileManager with a single file containing given bytes."""
+    priv, pub = generate_identity_keypair()
+    pub_bytes = get_public_key_bytes(pub)
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "testfile.bin")
+    with open(path, "wb") as f:
+        f.write(content)
+    fm = FileManager(tmpdir, priv, pub)
+    fm.scan_files()
+    meta = fm.get_file_list()[0]
+    return fm, meta, pub_bytes, tmpdir
+
+
+@pytest.mark.asyncio
+async def test_transfer_small_file():
+    content = b"small file content here"
+    fm, meta, pub_bytes, _ = _make_file_manager_with_content(content)
+    client_sess, server_sess = _make_session_pair()
+    output_dir = tempfile.mkdtemp()
+
+    async def server_handler(reader, writer):
+        await send_file(server_sess, writer, fm, meta.file_id)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    outpath = await receive_file(client_sess, reader, meta, output_dir, pub_bytes)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    with open(outpath, "rb") as f:
+        assert f.read() == content
+
+
+@pytest.mark.asyncio
+async def test_transfer_multi_chunk():
+    # ~200KB so it splits into a few 64KB chunks
+    content = os.urandom(200_000)
+    fm, meta, pub_bytes, _ = _make_file_manager_with_content(content)
+    client_sess, server_sess = _make_session_pair()
+    output_dir = tempfile.mkdtemp()
+
+    async def server_handler(reader, writer):
+        await send_file(server_sess, writer, fm, meta.file_id)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    outpath = await receive_file(client_sess, reader, meta, output_dir, pub_bytes)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    with open(outpath, "rb") as f:
+        assert f.read() == content
+
+
+@pytest.mark.asyncio
+async def test_transfer_hash_mismatch():
+    content = b"original content"
+    fm, meta, pub_bytes, _ = _make_file_manager_with_content(content)
+    client_sess, server_sess = _make_session_pair()
+    output_dir = tempfile.mkdtemp()
+
+    # Tamper with the expected hash so verification fails
+    meta.file_hash = b'\x00' * 32
+
+    async def server_handler(reader, writer):
+        await send_file(server_sess, writer, fm, meta.file_id)
+        writer.close()
+
+    srv = await asyncio.start_server(server_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    with pytest.raises(P2PError) as exc_info:
+        await receive_file(client_sess, reader, meta, output_dir, pub_bytes)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    # File should have been deleted
+    assert not os.path.exists(os.path.join(output_dir, "testfile.bin"))

@@ -3,7 +3,10 @@ from src.generated.p2pfileshare_pb2 import (
     FileChunk, FileTransferComplete, FileSendOffer, FileSendResponse,
     KeyRotationNotice, ErrorMessage,
 )
+import os
 from src.framing import send_message
+from src.file_manager import verify_file_integrity, verify_file_metadata
+from src.errors import P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE
 
 # Message type strings — must match between Python and Rust
 FILE_LIST_REQUEST = "FileListRequest"
@@ -103,3 +106,57 @@ async def handle_file_request(session, reader, writer, file_manager):
         resp.error_code = "CONSENT_DENIED"
 
     await send_app_message(session, writer, FILE_RESPONSE, resp)
+
+
+async def send_file(session, writer, file_manager, file_id, chunk_size=65536):
+    filepath = file_manager.get_file_path(file_id)
+    chunk_index = 0
+
+    with open(filepath, "rb") as f:
+        while True:
+            data = f.read(chunk_size)
+            if not data:
+                break
+            chunk = FileChunk()
+            chunk.file_id = file_id
+            chunk.chunk_index = chunk_index
+            chunk.data = data
+            await send_app_message(session, writer, FILE_CHUNK, chunk)
+            chunk_index += 1
+
+    complete = FileTransferComplete()
+    complete.file_id = file_id
+    complete.total_chunks = chunk_index
+    await send_app_message(session, writer, FILE_TRANSFER_COMPLETE, complete)
+
+
+async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes) -> str:
+    chunks = {}
+
+    # TODO: handle missing chunks or out-of-order total_chunks
+    while True:
+        msg_type, msg = await recv_app_message(session, reader)
+        if msg_type == FILE_CHUNK:
+            chunks[msg.chunk_index] = msg.data
+        elif msg_type == FILE_TRANSFER_COMPLETE:
+            break
+
+    # Reassemble in order
+    file_bytes = b""
+    for i in range(len(chunks)):
+        file_bytes += chunks[i]
+
+    filepath = os.path.join(output_dir, expected_metadata.filename)
+    with open(filepath, "wb") as f:
+        f.write(file_bytes)
+
+    # Verify signature first, then integrity
+    if not verify_file_metadata(expected_metadata, owner_pubkey_bytes):
+        os.remove(filepath)
+        raise P2PError(INVALID_FILE_SIGNATURE, "File metadata signature invalid")
+
+    if not verify_file_integrity(filepath, expected_metadata):
+        os.remove(filepath)
+        raise P2PError(FILE_HASH_MISMATCH, "File hash does not match metadata")
+
+    return filepath
