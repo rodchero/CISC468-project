@@ -8,6 +8,7 @@ from src.protocol import (
     request_file_list, handle_file_list_request,
     request_file, handle_file_request,
     send_file, receive_file,
+    offer_file, handle_file_offer,
     send_app_message, recv_app_message, FILE_LIST_REQUEST,
 )
 from src.generated.p2pfileshare_pb2 import FileMetadata
@@ -268,3 +269,65 @@ async def test_transfer_hash_mismatch():
 
     # File should have been deleted
     assert not os.path.exists(os.path.join(output_dir, "testfile.bin"))
+
+
+# --- Day 16: file send offer ---
+
+@pytest.mark.asyncio
+async def test_offer_accepted():
+    content = b"offered file data"
+    fm, meta, pub_bytes, _ = _make_file_manager_with_content(content)
+    sender_sess, receiver_sess = _make_session_pair()
+    output_dir = tempfile.mkdtemp()
+
+    async def receiver_handler(reader, writer):
+        with patch("builtins.input", return_value="y"):
+            await handle_file_offer(receiver_sess, reader, writer, output_dir, pub_bytes)
+        writer.close()
+
+    srv = await asyncio.start_server(receiver_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    accepted = await offer_file(sender_sess, reader, writer, meta)
+    assert accepted
+
+    # Now send the file since it was accepted
+    await send_file(sender_sess, writer, fm, meta.file_id)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    outpath = os.path.join(output_dir, meta.filename)
+    assert os.path.exists(outpath)
+    with open(outpath, "rb") as f:
+        assert f.read() == content
+
+
+@pytest.mark.asyncio
+async def test_offer_rejected():
+    content = b"unwanted file"
+    fm, meta, pub_bytes, _ = _make_file_manager_with_content(content)
+    sender_sess, receiver_sess = _make_session_pair()
+    output_dir = tempfile.mkdtemp()
+
+    async def receiver_handler(reader, writer):
+        with patch("builtins.input", return_value="n"):
+            result = await handle_file_offer(receiver_sess, reader, writer, output_dir, pub_bytes)
+        assert result is None
+        writer.close()
+
+    srv = await asyncio.start_server(receiver_handler, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    accepted = await offer_file(sender_sess, reader, writer, meta)
+    writer.close()
+
+    await asyncio.sleep(0.1)
+    srv.close()
+
+    assert accepted is False
+    # No file should have been written
+    assert not os.path.exists(os.path.join(output_dir, meta.filename))

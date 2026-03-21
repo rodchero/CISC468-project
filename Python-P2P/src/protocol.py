@@ -160,3 +160,35 @@ async def receive_file(session, reader, expected_metadata, output_dir, owner_pub
         raise P2PError(FILE_HASH_MISMATCH, "File hash does not match metadata")
 
     return filepath
+
+
+async def offer_file(session, reader, writer, metadata) -> bool:
+    offer = FileSendOffer()
+    offer.metadata.CopyFrom(metadata)
+    await send_app_message(session, writer, FILE_SEND_OFFER, offer)
+
+    msg_type, resp = await recv_app_message(session, reader)
+    if resp.accepted:
+        return True
+    print("Peer declined the file.")
+    return False
+
+
+async def handle_file_offer(session, reader, writer, output_dir, owner_pubkey_bytes):
+    msg_type, offer = await recv_app_message(session, reader)
+    meta = offer.metadata
+
+    # TODO: make this non-blocking
+    answer = input(
+        f"Peer wants to send you '{meta.filename}' ({meta.file_size} bytes). Accept? [y/n]: "
+    ).strip().lower()
+
+    resp = FileSendResponse()
+    if answer == "y":
+        resp.accepted = True
+        await send_app_message(session, writer, FILE_SEND_RESPONSE, resp)
+        return await receive_file(session, reader, meta, output_dir, owner_pubkey_bytes)
+    else:
+        resp.accepted = False
+        await send_app_message(session, writer, FILE_SEND_RESPONSE, resp)
+        return None
