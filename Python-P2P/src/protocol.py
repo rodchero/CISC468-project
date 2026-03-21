@@ -6,7 +6,8 @@ from src.generated.p2pfileshare_pb2 import (
 import os
 from src.framing import send_message
 from src.file_manager import verify_file_integrity, verify_file_metadata
-from src.errors import P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE
+from src.errors import P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE, KEY_ROTATION_INVALID
+from src.key_rotation import verify_rotation_notice
 
 # Message type strings — must match between Python and Rust
 FILE_LIST_REQUEST = "FileListRequest"
@@ -192,3 +193,20 @@ async def handle_file_offer(session, reader, writer, output_dir, owner_pubkey_by
         resp.accepted = False
         await send_app_message(session, writer, FILE_SEND_RESPONSE, resp)
         return None
+
+
+async def send_key_rotation(session, writer, notice):
+    await send_app_message(session, writer, KEY_ROTATION_NOTICE, notice)
+
+
+async def handle_key_rotation(session, trust_store, notice):
+    # Look up the stored old key to verify against
+    stored_old = bytes.fromhex(
+        trust_store.contacts[trust_store._fp(notice.old_public_key)]["pubkey"]
+    )
+
+    if not verify_rotation_notice(notice, stored_old):
+        raise P2PError(KEY_ROTATION_INVALID, "Key rotation verification failed")
+
+    trust_store.replace_key(notice.old_public_key, notice.new_public_key)
+    print("Contact rotated their key. Re-verification required.")

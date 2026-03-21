@@ -29,6 +29,17 @@ class TrustStore:
         if fp in self.contacts:
             self.contacts[fp]["trusted"] = True
 
+    def replace_key(self, old_pubkey_bytes, new_pubkey_bytes):
+        """Replace a contact's key after key rotation. Marks as untrusted."""
+        old_fp = self._fp(old_pubkey_bytes)
+        entry = self.contacts.pop(old_fp, None)
+        if entry is None:
+            return
+        new_fp = self._fp(new_pubkey_bytes)
+        entry["pubkey"] = new_pubkey_bytes.hex()
+        entry["trusted"] = False
+        self.contacts[new_fp] = entry
+
     def check_key_changed(self, display_name, pubkey_bytes) -> bool:
         fp = self._fp(pubkey_bytes)
         for stored_fp, entry in self.contacts.items():
