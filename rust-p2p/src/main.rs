@@ -1,21 +1,14 @@
-mod app;
-mod cli;
-mod crypto;
+// Declare the top-level modules. The compiler will look for 
+// app.rs, network/mod.rs, crypto/mod.rs, etc.
 mod error;
-mod file;
-mod handshake;
-mod net;
-mod peer;
+mod app;
+mod crypto;
+mod network;
 mod protocol;
 mod storage;
-mod tests;
 
-use app::config::AppConfig;
 
 fn main() {
-    let config = AppConfig::default();
-
-    if let Err(e) = app::controller::run(config) {
-        eprintln!("Error: {}", e);
-    }
+    println!("Starting P2P Secure File Sharing Client...");
+    // Future: Initialize storage, start mDNS, bind TCP listener, etc.
 }

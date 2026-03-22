@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package p2pfileshare;
+
+message Hello {
+    uint32 protocol_version = 1;
+    bytes identity_public_key = 2;
+    bytes ephemeral_public_key = 3;
+    string display_name = 4;
+}
+
+message AuthSignature {
+    bytes signature = 1;
+}
+
+message HandshakeError {
+    string error_code = 1;
+    string description = 2;
+}
+
+message EncryptedMessage {
+    string message_type = 1;
+    uint64 counter = 2;
+    bytes nonce = 3;
+    bytes ciphertext = 4;
+}
+
+message ErrorMessage {
+    string error_code = 1;
+    string description = 2;
+}
+
+message FileMetadata {
+    bytes owner_fingerprint = 1;
+    bytes file_id = 2;
+    string filename = 3;
+    uint64 file_size = 4;
+    bytes file_hash = 5;
+    uint64 timestamp = 6;
+    bytes owner_signature = 7;
+}
+
+message FileListRequest {}
+
+message FileListResponse {
+    repeated FileMetadata files = 1;
+}
+
+message FileRequest {
+    bytes file_id = 1;
+}
+
+message FileResponse {
+    bool approved = 1;
+    string error_code = 2;
+}
+
+message FileChunk {
+    bytes file_id = 1;
+    uint32 chunk_index = 2;
+    bytes data = 3;
+}
+
+message FileTransferComplete {
+    bytes file_id = 1;
+    uint32 total_chunks = 2;
+}
+
+message FileSendOffer {
+    FileMetadata metadata = 1;
+}
+
+message FileSendResponse {
+    bool accepted = 1;
+}
+
+message KeyRotationNotice {
+    bytes old_public_key = 1;
+    bytes new_public_key = 2;
+    uint64 timestamp = 3;
+    bytes old_signature = 4;
+    bytes new_signature = 5;
+}
+
+message P2PMessage {
+    oneof payload {
+        Hello hello = 1;
+        AuthSignature auth_signature = 2;
+        HandshakeError handshake_error = 3;
+        EncryptedMessage encrypted_message = 4;
+        ErrorMessage error_message = 5;
+        FileListRequest file_list_request = 6;
+        FileListResponse file_list_response = 7;
+        FileRequest file_request = 8;
+        FileResponse file_response = 9;
+        FileChunk file_chunk = 10;
+        FileTransferComplete file_transfer_complete = 11;
+        FileSendOffer file_send_offer = 12;
+        FileSendResponse file_send_response = 13;
+        KeyRotationNotice key_rotation_notice = 14;
+        FileMetadata file_metadata = 15;
+        ErrorMessage post_handshake_error = 16;
+    }
+}
