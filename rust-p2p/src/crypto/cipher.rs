@@ -11,7 +11,6 @@ fn build_nonce(counter: u64) -> [u8; 12] {
     nonce_bytes
 }
 
-// Notice the return type changed from String to P2pError
 pub fn encrypt_message(key: &AesKeyBytes, counter: u64, plaintext: &[u8]) -> Result<Vec<u8>, P2pError> {
     let cipher = Aes256Gcm::new(key.into());
     let nonce_bytes = build_nonce(counter);
@@ -22,7 +21,6 @@ pub fn encrypt_message(key: &AesKeyBytes, counter: u64, plaintext: &[u8]) -> Res
         .map_err(|_| P2pError::DecryptionFailed) 
 }
 
-// Notice the return type changed here too
 pub fn decrypt_message(key: &AesKeyBytes, counter: u64, ciphertext: &[u8]) -> Result<Vec<u8>, P2pError> {
     let cipher = Aes256Gcm::new(key.into());
     let nonce_bytes = build_nonce(counter);

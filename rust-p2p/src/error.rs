@@ -23,7 +23,6 @@ pub enum P2pError {
     IoError(String),
 }
 
-// Notice the return type is now `fmt::Result`
 impl fmt::Display for P2pError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
