@@ -19,5 +19,8 @@ rand_core = { version = "0.6", features = ["std"] }
 prost = "0.13"
 bytes = "1.7"
 
+# mDNS
+mdns-sd = "0.4"
+
 [build-dependencies]
 prost-build = "0.13"
