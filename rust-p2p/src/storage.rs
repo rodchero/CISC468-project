@@ -151,7 +151,7 @@ fn decrypt_local_data(master_key: &AesKeyBytes, stored_data: &[u8]) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir; // Make sure to add `tempfile = "3.8"` to [dev-dependencies] in Cargo.toml
+    use tempfile::tempdir; 
 
     #[test]
     fn test_secure_storage_read_write_cycle() {

@@ -1,13 +1,23 @@
-// Declare the top-level modules.
-mod error;
-mod app;
-mod crypto;
-mod network;
-mod protocol;
-mod storage;
+// module tree
+pub mod app;
+pub mod crypto;
+pub mod error;
+pub mod network;
+pub mod protocol;
+pub mod storage;
 
+// external crates
 use std::net::TcpListener;
+use std::path::Path;
+
+use ed25519_dalek::{SigningKey, SecretKey};
+use rand_core::OsRng;
+
+// internal modules
 use crate::error::P2pError;
+use crate::storage::SecureStorage;
+use crate::app::P2pApp;
+use crate::network::discovery::Discovery;
 
 fn main() -> Result<(), P2pError> {
     println!("==========================================");
@@ -15,53 +25,72 @@ fn main() -> Result<(), P2pError> {
     println!("==========================================");
 
     // ---------------------------------------------------------
-    // PHASE 1: Local Storage & Cryptographic Identity Setup
+    // PHASE 1: Local Storage & Vault Initialization
     // ---------------------------------------------------------
     
-    // In a real app, you would prompt the user for this in the terminal.
-    let display_name = "RustPeer_Alpha";
+    // In a final production app, you'd securely prompt the user for this password via CLI/UI.
+    let display_name = "RustNode_Roman";
     let password = "super_secret_user_password";
+    let storage_dir = "./roman_p2p_vault";
     
-    // A hardcoded salt for the skeleton. In reality, generate this once and save it to disk!
+    // We use a static salt for simplicity in this implementation, 
+    // but in a real scenario, you'd generate this once and store it alongside the vault.
     let salt = b"cisc468_static_salt_1234"; 
-    
-    println!("[*] Deriving local master key via Argon2id...");
-    let _master_key = storage::derive_local_master_key(password, salt)?;
 
-    println!("[*] Generating Ed25519 Identity Keypair...");
-    // For the skeleton we generate a fresh key every time. 
-    // Later, you will load the saved key encrypted by _master_key.
-    let (my_id_secret, _my_id_pub) = crypto::keys::generate_identity_keypair();
+    println!("[*] Unlocking local storage vault...");
+    let storage = SecureStorage::new(storage_dir, password, salt)?;
 
     // ---------------------------------------------------------
-    // PHASE 2: Application State & Discovery
+    // PHASE 2: Cryptographic Identity (Persistent)
     // ---------------------------------------------------------
     
-    let p2p_app = app::P2pApp::new(display_name);
-    let port = 9468; // Default TCP port from the spec
+    let identity_filename = "ed25519_identity.key";
+    let my_id_secret = match storage.read_file(identity_filename) {
+        Ok(key_bytes) => {
+            println!("[+] Loaded existing encrypted identity key from storage.");
+            let secret_bytes: [u8; 32] = key_bytes.try_into().expect("Key should be 32 bytes");
+            SigningKey::from_bytes(&secret_bytes)
+        }
+        Err(_) => {
+            println!("[*] No identity key found. Generating a fresh Ed25519 keypair...");
+            let mut csprng = OsRng;
+            let new_key = SigningKey::generate(&mut csprng);
+            
+            // Save it securely to our encrypted vault
+            storage.write_file(identity_filename, &new_key.to_bytes())?;
+            println!("[+] New identity key securely saved to vault.");
+            new_key
+        }
+    };
+
+    // ---------------------------------------------------------
+    // PHASE 3: Application State & mDNS Discovery
+    // ---------------------------------------------------------
+    
+    let p2p_app = P2pApp::new(display_name, &storage);
+    let port = 9468; 
 
     println!("[*] Initializing mDNS discovery...");
-    let discovery = network::discovery::Discovery::new()?;
+    let discovery = Discovery::new()?;
     
-    // Broadcast our presence to the local network [cite: 502]
+    // Broadcast our presence to the local network so the Python client can find us
     discovery.start_advertising(display_name, port)?;
     
-    // Optional: Start browsing for Python peers in the background
+    // Start browsing for Python peers in the background
     let _browser = discovery.start_browsing()?;
 
     // ---------------------------------------------------------
-    // PHASE 3: TCP Listener & Connection Handling
+    // PHASE 4: TCP Listener & Connection Handling
     // ---------------------------------------------------------
     
-    // Bind to 0.0.0.0 to listen on all available network interfaces
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| {
         P2pError::IoError(format!("Failed to bind TCP listener on port {}: {}", port, e))
     })?;
 
-    println!("\n[+] Listening for incoming P2P connections on TCP port {}...", port);
-    println!("[+] Waiting for Python peer to connect...\n");
+    println!("\n[+] Node is online! Listening on TCP port {}...", port);
+    println!("[+] Waiting for Youssef's Python peer to connect...\n");
 
-    // This loop blocks and waits for an incoming TCP connection
+    // This loop blocks and waits for incoming TCP connections
     for stream in listener.incoming() {
         match stream {
             Ok(mut tcp_stream) => {
@@ -69,24 +98,19 @@ fn main() -> Result<(), P2pError> {
                 println!("------------------------------------------");
                 println!(" Incoming connection from: {}", peer_addr);
                 
-                // ---------------------------------------------------------
-                // PHASE 4: The Handshake
-                // ---------------------------------------------------------
                 println!(" [*] Running secure handshake as Responder...");
                 
+                // Pass the stream, our secret key, and display name into the handshake state machine
                 match protocol::handshake::run_responder(&mut tcp_stream, &my_id_secret, display_name) {
                     Ok((tx_key, rx_key, peer_id_pub)) => {
-                        println!(" [+] Handshake successful!");
-                        println!(" [+] Peer Identity: {:x?}", &peer_id_pub[0..8]); // Print first 8 bytes of fingerprint
+                        println!(" [+] Handshake successful! Mutual authentication complete.");
+                        println!(" [+] Peer Identity Fingerprint: {:x?}", &peer_id_pub[0..8]); 
                         
-                        // ---------------------------------------------------------
-                        // PHASE 5: Secure Session & App Logic
-                        // ---------------------------------------------------------
                         let secure_session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                         
-                        println!(" [*] Handing connection to Application Router...");
+                        println!(" [*] Handing encrypted channel to Application Router...");
                         
-                        // This will block and handle messages until the peer disconnects
+                        // Blocks and handles all protobuf messages until the peer disconnects
                         if let Err(e) = p2p_app.run_peer_session(secure_session) {
                             println!(" [-] Session ended: {}", e);
                         }
