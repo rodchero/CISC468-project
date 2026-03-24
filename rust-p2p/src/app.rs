@@ -79,7 +79,8 @@ impl<'a> P2pApp<'a> {
         payload: &[u8]
     ) -> Result<(), P2pError> {
         let req = FileRequest::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
-        println!("[?] Peer requested file ID: {:x?}", &req.file_id[0..8]);
+        let print_len = std::cmp::min(req.file_id.len(), 8);
+        println!("[?] Peer requested file ID: {:x?}", &req.file_id[0..print_len]);
 
         // Simulating user consent. In reality, you'd trigger a UI prompt here.
         let user_consents = true; 
@@ -297,7 +298,7 @@ mod tests {
         
         // 2. Remote peer requests the file
         let req = FileRequest {
-            file_id: vec![0xAA, 0xBB], 
+            file_id: vec![0xAA; 32], 
         };
         let mut req_buf = Vec::new();
         req.encode(&mut req_buf).unwrap();
