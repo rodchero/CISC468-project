@@ -55,3 +55,34 @@ class SecureStorage:
         with open(path, "rb") as f:
             blob = f.read()
         return self.decrypt_data(blob)
+
+    def save_identity_key(self, seed_bytes: bytes):
+        self.save("identity_key", seed_bytes)
+
+    def load_identity_key(self):
+        return self.load("identity_key")
+
+    def save_trust_store(self, trust_store):
+        import json
+        data = json.dumps(trust_store.to_dict()).encode()
+        self.save("contacts", data)
+
+    def load_trust_store(self):
+        import json
+        from src.trust import TrustStore
+        data = self.load("contacts")
+        if data is None:
+            return None
+        return TrustStore.from_dict(json.loads(data.decode()))
+
+    def save_metadata_cache(self, cache_dict):
+        import json
+        # TODO: serialize FileMetadata protobufs properly
+        self.save("metadata_cache", json.dumps(cache_dict).encode())
+
+    def load_metadata_cache(self):
+        import json
+        data = self.load("metadata_cache")
+        if data is None:
+            return None
+        return json.loads(data.decode())
