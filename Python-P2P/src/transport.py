@@ -2,7 +2,7 @@ import asyncio
 from src.handshake import perform_handshake_initiator, perform_handshake_responder
 from src.protocol import (
     recv_app_message, handle_file_list_request, handle_file_request,
-    handle_file_offer, handle_key_rotation, send_file,
+    handle_file_offer, handle_key_rotation, send_file, send_app_message,
     FILE_LIST_REQUEST, FILE_REQUEST, FILE_SEND_OFFER,
     KEY_ROTATION_NOTICE, ERROR_MESSAGE,
 )
@@ -37,6 +37,8 @@ class ConnectionManager:
             await self._message_loop(session, reader, writer)
         except P2PError as e:
             print(f"Handshake failed: {e}")
+        except ConnectionError:
+            print(f"Peer disconnected during handshake.")
         except Exception as e:
             print(f"Connection error: {e}")
         finally:
@@ -136,6 +138,16 @@ class ConnectionManager:
             print(f"Peer {session.peer_display_name} disconnected.")
         except P2PError as e:
             print(f"Protocol error: {e}")
+            try:
+                from src.generated.p2pfileshare_pb2 import ErrorMessage as ErrMsg
+                err = ErrMsg()
+                err.error_code = e.error_code
+                err.description = e.description
+                await send_app_message(session, writer, ERROR_MESSAGE, err)
+            except Exception:
+                pass  # connection might already be dead
+        except ConnectionError:
+            print(f"Peer {session.peer_display_name} disconnected.")
         except Exception as e:
             print(f"Connection error: {e}")
         finally:

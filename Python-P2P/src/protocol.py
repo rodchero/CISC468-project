@@ -1,3 +1,4 @@
+import asyncio
 from src.generated.p2pfileshare_pb2 import (
     FileListRequest, FileListResponse, FileRequest, FileResponse,
     FileChunk, FileTransferComplete, FileSendOffer, FileSendResponse,
@@ -6,7 +7,10 @@ from src.generated.p2pfileshare_pb2 import (
 import os
 from src.framing import send_message
 from src.file_manager import verify_file_integrity, verify_file_metadata
-from src.errors import P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE, KEY_ROTATION_INVALID
+from src.errors import (
+    P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE,
+    KEY_ROTATION_INVALID, INVALID_MESSAGE, TRANSFER_INTERRUPTED,
+)
 from src.key_rotation import verify_rotation_notice
 
 # Message type strings — must match between Python and Rust
@@ -47,7 +51,7 @@ async def recv_app_message(session, reader):
 
     proto_class = MSG_TYPE_MAP.get(msg_type)
     if proto_class is None:
-        raise ValueError(f"Unknown message type: {msg_type}")
+        raise P2PError(INVALID_MESSAGE, f"Unknown message type: {msg_type}")
 
     parsed = proto_class()
     parsed.ParseFromString(plaintext)
@@ -134,13 +138,15 @@ async def send_file(session, writer, file_manager, file_id, chunk_size=65536):
 async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes) -> str:
     chunks = {}
 
-    # TODO: handle missing chunks or out-of-order total_chunks
-    while True:
-        msg_type, msg = await recv_app_message(session, reader)
-        if msg_type == FILE_CHUNK:
-            chunks[msg.chunk_index] = msg.data
-        elif msg_type == FILE_TRANSFER_COMPLETE:
-            break
+    try:
+        while True:
+            msg_type, msg = await recv_app_message(session, reader)
+            if msg_type == FILE_CHUNK:
+                chunks[msg.chunk_index] = msg.data
+            elif msg_type == FILE_TRANSFER_COMPLETE:
+                break
+    except (asyncio.IncompleteReadError, ConnectionError) as e:
+        raise P2PError(TRANSFER_INTERRUPTED, f"Connection lost during transfer: {e}")
 
     # Reassemble in order
     file_bytes = b""

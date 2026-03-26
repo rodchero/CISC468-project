@@ -1,3 +1,4 @@
+import asyncio
 import struct
 from src.generated.p2pfileshare_pb2 import P2PMessage
 from src.crypto_utils import (
@@ -6,7 +7,7 @@ from src.crypto_utils import (
     compute_shared_secret as x25519_shared_secret,
     derive_session_keys as hkdf_derive,
 )
-from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION, AUTH_FAILED
+from src.errors import P2PError, UNSUPPORTED_PROTOCOL_VERSION, AUTH_FAILED, HANDSHAKE_FAILED
 from src.framing import send_message, recv_message
 from src.session import Session
 
@@ -109,7 +110,10 @@ async def perform_handshake_initiator(reader, writer, identity_priv, identity_pu
 
     # 1. Send our Hello, then receive peer's Hello
     await send_message(writer, hs.create_hello())
-    peer_hello = await recv_message(reader)
+    try:
+        peer_hello = await recv_message(reader)
+    except (asyncio.IncompleteReadError, ConnectionError) as e:
+        raise P2PError(HANDSHAKE_FAILED, f"Connection lost during handshake: {e}")
     hs.process_hello(peer_hello)
 
     # 2. Compute shared secret and transcript
@@ -118,7 +122,10 @@ async def perform_handshake_initiator(reader, writer, identity_priv, identity_pu
 
     # 3. Send our AuthSignature, then receive peer's
     await send_message(writer, hs.create_auth_message())
-    peer_auth = await recv_message(reader)
+    try:
+        peer_auth = await recv_message(reader)
+    except (asyncio.IncompleteReadError, ConnectionError) as e:
+        raise P2PError(HANDSHAKE_FAILED, f"Connection lost during handshake: {e}")
     if not hs.verify_peer_signature(peer_auth):
         raise P2PError(AUTH_FAILED, "Peer signature verification failed")
 
@@ -131,7 +138,10 @@ async def perform_handshake_responder(reader, writer, identity_priv, identity_pu
     hs = Handshake(identity_priv, identity_pub, display_name, is_initiator=False)
 
     # 1. Receive peer's Hello, then send ours
-    peer_hello = await recv_message(reader)
+    try:
+        peer_hello = await recv_message(reader)
+    except (asyncio.IncompleteReadError, ConnectionError) as e:
+        raise P2PError(HANDSHAKE_FAILED, f"Connection lost during handshake: {e}")
     hs.process_hello(peer_hello)
     await send_message(writer, hs.create_hello())
 
@@ -140,7 +150,10 @@ async def perform_handshake_responder(reader, writer, identity_priv, identity_pu
     hs.compute_transcript_hash()
 
     # 3. Receive peer's AuthSignature, verify, then send ours
-    peer_auth = await recv_message(reader)
+    try:
+        peer_auth = await recv_message(reader)
+    except (asyncio.IncompleteReadError, ConnectionError) as e:
+        raise P2PError(HANDSHAKE_FAILED, f"Connection lost during handshake: {e}")
     if not hs.verify_peer_signature(peer_auth):
         raise P2PError(AUTH_FAILED, "Peer signature verification failed")
     await send_message(writer, hs.create_auth_message())
