@@ -121,7 +121,7 @@ impl<'a> P2pApp<'a> {
         }
     }
 
-    /// REAL FILE LIST: Returns actual files registered in the NodeState
+    /// Returns actual files registered in the NodeState
     fn handle_file_list_request<S: Read + Write>(&self, session: &mut SecureSession<S>, peer_ip: &str) -> Result<(), P2pError> {
         println!("\n[*] Peer {} requested file list.", peer_ip);
         
@@ -152,7 +152,7 @@ impl<'a> P2pApp<'a> {
         Ok(())
     }
 
-    /// REAL LOOKUP & CONSENT PROMPT: Looks up the file and waits for CLI approval
+    /// Looks up the file and waits for CLI approval
     fn handle_file_request<S: Read + Write>(&self, session: &mut SecureSession<S>, peer_ip: &str, payload: &[u8]) -> Result<(), P2pError> {
         let req = FileRequest::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
         

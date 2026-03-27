@@ -4,7 +4,7 @@
 // and virtually pastes its contents right here.
 include!(concat!(env!("OUT_DIR"), "/p2pfileshare.rs"));
 
-// --- Unit Tests ---
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,9 +17,7 @@ use crate::protocol::messages::{
 
 const PROTOCOL_VERSION: u32 = 1;
 
-/// Helper to build and hash the exact transcript bytes required by the spec.
-/// **INTEROP NOTE:** You must confirm with Youssef (Python dev) how he encodes 
-/// the protocol_version. Here we use 4-byte big-endian to match Protobuf's uint32.
+/// Helper to build and hash the exact transcript bytes required by the spec
 fn compute_transcript_hash(
     initiator_id: &[u8; 32],
     initiator_eph: &[u8; 32],

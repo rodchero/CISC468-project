@@ -57,7 +57,7 @@ fn main() -> Result<(), P2pError> {
                 SigningKey::from_bytes(&secret_bytes)
             }
             Err(_) => {
-                println!("\n[!!!] FATAL SECURITY ERROR [!!!]");
+                println!("\n[!] FATAL SECURITY ERROR");
                 println!("Failed to decrypt the identity key. You entered an incorrect password.");
                 println!("Shutting down to prevent data corruption.");
                 std::process::exit(1);

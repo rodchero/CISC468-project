@@ -3,7 +3,6 @@ use crate::error::P2pError;
 use crate::protocol::messages::{FileMetadata, KeyRotationNotice};
 
 /// Helper function to build the exact canonical bytes for FileMetadata signing.
-/// Matches Python format: owner_fingerprint || file_id || filename_utf8 || file_size_BE || file_hash || timestamp_BE
 fn build_canonical_metadata_bytes(metadata: &FileMetadata) -> Vec<u8> {
     let mut buf = Vec::new();
     
@@ -24,7 +23,6 @@ fn build_canonical_metadata_bytes(metadata: &FileMetadata) -> Vec<u8> {
 }
 
 /// Helper function to build the exact canonical bytes for KeyRotationNotice signing.
-/// Matches Python format: old_pubkey(32) || new_pubkey(32) || timestamp(8-byte BE)
 fn build_canonical_key_rotation_bytes(notice: &KeyRotationNotice) -> Vec<u8> {
     // 32 bytes + 32 bytes + 8 bytes = 72 bytes total
     let mut buf = Vec::with_capacity(72); 
