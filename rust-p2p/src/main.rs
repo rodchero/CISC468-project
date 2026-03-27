@@ -26,7 +26,7 @@ fn main() -> Result<(), P2pError> {
     println!(" CISC 468 P2P Secure File Sharing Client  ");
     println!("==========================================");
 
-    let display_name = "RustNode_Roman2";
+    let display_name = "RustNode_Roman";
     let storage_dir = "./roman_p2p_vault";
     let salt = b"cisc468_static_salt_1234"; 
     let port = 9468; 
