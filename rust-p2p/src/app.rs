@@ -26,6 +26,8 @@ pub struct NodeState {
     pub file_registry: HashMap<Vec<u8>, String>,
     // Maps a 32-byte File ID to its metadata so we can share it
     pub metadata_cache: HashMap<Vec<u8>, FileMetadata>,
+    // Buffer to hold incoming chunks until FileTransferComplete is received
+    pub incoming_transfers: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 /// Defines an action a session should take immediately upon connecting
@@ -109,8 +111,8 @@ impl<'a> P2pApp<'a> {
                 "FileSendOffer" => self.handle_file_send_offer(&mut session, peer_ip, &payload)?,
                 "KeyRotationNotice" => self.handle_key_rotation_notice(peer_ip, &payload)?,
                 "FileResponse" => println!("\n[+] Received FileResponse. Transfer status updated."),
-                "FileChunk" => println!("\n[*] Receiving file chunk..."), // Stubbed for brevity
-                "FileTransferComplete" => println!("\n[+] File transfer complete!"),
+                "FileChunk" => self.handle_file_chunk(&payload)?,
+                "FileTransferComplete" => self.handle_file_transfer_complete(&payload)?, 
                 _ => {
                     println!("\n[-] Unhandled message type: {}", msg_type);
                     self.send_error(&mut session, "INVALID_MESSAGE", "Unknown message type")?;
@@ -138,9 +140,13 @@ impl<'a> P2pApp<'a> {
         if resp.files.is_empty() {
             println!("(No files available)");
         }
+
+        let mut state = self.state.lock().unwrap();
+
         for file in resp.files {
             let id_hex = hex::encode(&file.file_id[..4]); // Show first 8 chars
             println!(" ID: {} | Name: {} | Size: {} bytes", id_hex, file.filename, file.file_size);
+            state.metadata_cache.insert(file.file_id.clone(), file.clone());
         }
         println!("------------------------");
         Ok(())
@@ -215,6 +221,11 @@ impl<'a> P2pApp<'a> {
         println!("\n[!] Peer {} is offering to send you '{}' ({} bytes).", peer_ip, metadata.filename, metadata.file_size);
         println!("[!] Type '/approve {}' or '/deny {}' to accept.", id_hex, id_hex);
 
+        {
+            let mut state = self.state.lock().unwrap();
+            state.metadata_cache.insert(metadata.file_id.clone(), metadata.clone());
+        }
+
         let approved = self.wait_for_consent(&id_hex);
 
         if approved {
@@ -284,6 +295,60 @@ impl<'a> P2pApp<'a> {
         let mut buf = Vec::new();
         err_msg.encode(&mut buf).unwrap();
         session.send_encrypted("ErrorMessage", &buf)
+    }
+
+    /// Receives a chunk of data and appends it to the temporary RAM buffer.
+    fn handle_file_chunk(&self, payload: &[u8]) -> Result<(), P2pError> {
+        let chunk = FileChunk::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
+        let mut state = self.state.lock().unwrap();
+        
+        // Find the buffer for this file, or create a new one, and append the bytes
+        let buffer = state.incoming_transfers.entry(chunk.file_id).or_insert_with(Vec::new);
+        buffer.extend_from_slice(&chunk.data);
+        Ok(())
+    }
+
+    /// Triggers when all chunks arrive. Reassembles the file, verifies cryptography, and saves to vault.
+    /// Fulfills Assignment Requirement 5 (Third-Party Integrity & Verification).
+    fn handle_file_transfer_complete(&self, payload: &[u8]) -> Result<(), P2pError> {
+        let comp = FileTransferComplete::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
+        
+        let mut state = self.state.lock().unwrap();
+        let received_data = state.incoming_transfers.remove(&comp.file_id).ok_or(P2pError::InvalidMessage)?;
+        let metadata = state.metadata_cache.get(&comp.file_id).cloned().ok_or(P2pError::InvalidMessage)?;
+        
+        // Drop lock before doing expensive cryptography
+        drop(state);
+
+        println!("\n[*] All chunks received for '{}'. Verifying integrity and signatures...", metadata.filename);
+
+        // 1. Verify SHA-256 Hash
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&received_data);
+        let computed_hash = hasher.finalize();
+        
+        if computed_hash.as_slice() != metadata.file_hash {
+            println!("[-] SECURITY ALERT: File hash mismatch for '{}'! File dropped.", metadata.filename);
+            return Err(P2pError::FileHashMismatch);
+        }
+
+        // 2. Verify Original Owner's Ed25519 Signature
+        let owner_pub: [u8; 32] = metadata.owner_fingerprint.clone().try_into().map_err(|_| P2pError::InvalidMessage)?;
+        if let Err(e) = crate::protocol::verification::verify_metadata(&metadata, &owner_pub) {
+             println!("[-] SECURITY ALERT: Invalid owner signature on file '{}'! File dropped.", metadata.filename);
+             return Err(e);
+        }
+
+        // 3. Save to Secure Encrypted Storage
+        self.storage.write_file(&metadata.filename, &received_data)?;
+        println!("[+] Verification passed! File '{}' securely saved to vault.", metadata.filename);
+
+        // 4. Register the file so we can now seed/share it with others!
+        let mut state = self.state.lock().unwrap();
+        state.file_registry.insert(comp.file_id.clone(), metadata.filename.clone());
+        
+        Ok(())
     }
 }
 
