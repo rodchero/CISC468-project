@@ -26,25 +26,42 @@ fn main() -> Result<(), P2pError> {
     println!(" CISC 468 P2P Secure File Sharing Client  ");
     println!("==========================================");
 
-    let display_name = "RustNode_Roman";
-    let password = "super_secret_user_password";
+    let display_name = "RustNode_Roman2";
     let storage_dir = "./roman_p2p_vault";
     let salt = b"cisc468_static_salt_1234"; 
     let port = 9468; 
 
     // 1. Vault & Identity Setup
-    let storage = SecureStorage::new(storage_dir, password, salt)?;
+    let password = rpassword::prompt_password("[?] Enter your secure vault password: ")
+        .expect("Failed to read password from terminal");
+        
+    let storage = SecureStorage::new(storage_dir, &password, salt)?;
     let identity_filename = "ed25519_identity.key";
-    let my_id_secret = match storage.read_file(identity_filename) {
-        Ok(key_bytes) => {
-            let secret_bytes: [u8; 32] = key_bytes.try_into().unwrap();
-            SigningKey::from_bytes(&secret_bytes)
-        }
-        Err(_) => {
-            let mut csprng = OsRng;
-            let new_key = SigningKey::generate(&mut csprng);
-            storage.write_file(identity_filename, &new_key.to_bytes())?;
-            new_key
+    
+    // Construct the actual OS path to check if the file exists
+    let identity_filepath = format!("{}/{}", storage_dir, identity_filename);
+    let is_new_vault = !std::path::Path::new(&identity_filepath).exists();
+
+    let my_id_secret = if is_new_vault {
+        println!("[*] No identity key found. Generating a fresh Ed25519 keypair...");
+        let mut csprng = OsRng;
+        let new_key = SigningKey::generate(&mut csprng);
+        storage.write_file(identity_filename, &new_key.to_bytes())?;
+        new_key
+    } else {
+        // The file exists on disk. If read_file fails now, it is a wrong password.
+        match storage.read_file(identity_filename) {
+            Ok(key_bytes) => {
+                println!("[+] Vault unlocked successfully. Loaded existing identity.");
+                let secret_bytes: [u8; 32] = key_bytes.try_into().expect("Invalid key length");
+                SigningKey::from_bytes(&secret_bytes)
+            }
+            Err(_) => {
+                println!("\n[!!!] FATAL SECURITY ERROR [!!!]");
+                println!("Failed to decrypt the identity key. You entered an incorrect password.");
+                println!("Shutting down to prevent data corruption.");
+                std::process::exit(1);
+            }
         }
     };
 
