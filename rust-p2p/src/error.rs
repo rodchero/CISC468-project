@@ -21,6 +21,8 @@ pub enum P2pError {
     // It's helpful to have a generic wrapper for lower-level library errors 
     // (like network timeouts or IO errors) that aren't strictly protocol errors.
     IoError(String),
+    // for MDNS
+    NetworkError(String),
 }
 
 impl fmt::Display for P2pError {
@@ -41,6 +43,7 @@ impl fmt::Display for P2pError {
             P2pError::TransferInterrupted => write!(f, "TRANSFER_INTERRUPTED: The file transfer was disconnected unexpectedly."),
             P2pError::KeyRotationInvalid => write!(f, "KEY_ROTATION_INVALID: The key migration notice is invalid or improperly signed."),
             P2pError::IoError(msg) => write!(f, "IO_ERROR: {}", msg),
+            P2pError::NetworkError(msg) => write!(f, "NETWORK_ERROR: {}", msg),
         }
     }
 }

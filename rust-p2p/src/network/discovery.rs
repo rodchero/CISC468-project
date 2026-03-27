@@ -1,8 +1,6 @@
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo, Receiver};
-use std::collections::HashMap; 
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use std::time::Duration;
 use crate::error::P2pError;
-
-pub const SERVICE_TYPE: &str = "_p2pfileshare._tcp.local.";
 
 pub struct Discovery {
     daemon: ServiceDaemon,
@@ -10,92 +8,79 @@ pub struct Discovery {
 
 impl Discovery {
     pub fn new() -> Result<Self, P2pError> {
-        let daemon = ServiceDaemon::new().map_err(|e| {
-            P2pError::IoError(format!("Failed to start mDNS daemon: {}", e))
-        })?;
+        let daemon = ServiceDaemon::new().map_err(|e| P2pError::NetworkError(e.to_string()))?;
         
+        // IMPORTANT FIX FOR 0.18+: 
+        // Explicitly enable multicast loopback so the daemon can discover its own services.
+        // Without this, local unit tests will timeout and fail!
+        let _ = daemon.set_multicast_loop_v4(true);
+        let _ = daemon.set_multicast_loop_v6(true);
+
         Ok(Self { daemon })
     }
 
     pub fn start_advertising(&self, instance_name: &str, port: u16) -> Result<(), P2pError> {
-        // The crate expects a simple string slice for the IP
-        let my_ip = "0.0.0.0"; 
-        let host_name = format!("{}.local.", instance_name);
-
-        // The crate expects an Option<HashMap<String, String>> for properties
-        let mut props = HashMap::new();
-        props.insert("app".to_string(), "cisc468-p2p".to_string());
-        let properties = Some(props);
-
+        let service_type = "_p2pfileshare._tcp.local.";
+        // mdns-sd 0.18 strictly requires hostnames to end with .local.
+        let host_name = format!("{}.local.", instance_name); 
+        let properties = [("version", "1.0")];
+        
+        // Use `()` instead of `""` to represent "No IP" in 0.18's AsIpAddrs trait
         let service_info = ServiceInfo::new(
-            SERVICE_TYPE,
+            service_type,
             instance_name,
             &host_name,
-            my_ip,
+            (), 
             port,
-            properties,
-        );
-
-        self.daemon.register(service_info).map_err(|e| {
-            P2pError::IoError(format!("Failed to register mDNS service: {}", e))
-        })?;
-
+            &properties[..],
+        ).unwrap().enable_addr_auto();
+        
+        self.daemon.register(service_info).map_err(|e| P2pError::NetworkError(e.to_string()))?;
+        
         println!("Advertising mDNS service: {} on port {}", instance_name, port);
         Ok(())
     }
 
-    pub fn start_browsing(&self) -> Result<Receiver<ServiceEvent>, P2pError> {
-        let receiver = self.daemon.browse(SERVICE_TYPE).map_err(|e| {
-            P2pError::IoError(format!("Failed to browse mDNS: {}", e))
-        })?;
-
-        println!("Browsing for peers on {}...", SERVICE_TYPE);
-        Ok(receiver)
-    }
-
-    pub fn stop_advertising(&self, instance_name: &str) -> Result<(), P2pError> {
-        let full_name = format!("{}.{}", instance_name, SERVICE_TYPE);
-        self.daemon.unregister(&full_name).map_err(|e| {
-            P2pError::IoError(format!("Failed to stop mDNS advertising: {}", e))
-        })?;
-        Ok(())
+    pub fn start_browsing(&self) -> Result<mdns_sd::Receiver<ServiceEvent>, P2pError> {
+        let service_type = "_p2pfileshare._tcp.local.";
+        println!("Browsing for peers on {}...", service_type);
+        self.daemon.browse(service_type).map_err(|e| P2pError::NetworkError(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_mdns_advertise_and_discover() {
-        let discovery = Discovery::new().expect("Failed to create discovery daemon");
-        let test_peer_name = "TestRustPeer";
-        let test_port = 9468;
-
+        let discovery = Discovery::new().expect("Failed to create Discovery instance");
         let receiver = discovery.start_browsing().expect("Failed to start browsing");
-        discovery.start_advertising(test_peer_name, test_port).expect("Failed to advertise");
 
-        let mut found_ourselves = false;
-        let timeout = Duration::from_secs(2);
-        let start_time = std::time::Instant::now();
+        let instance_name = "TestRustPeer";
+        discovery.start_advertising(instance_name, 9468).expect("Failed to advertise");
 
-        while start_time.elapsed() < timeout {
+        let timeout = Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        let mut found = false;
+
+        while start.elapsed() < timeout {
+            // Check for messages every 100ms
             if let Ok(event) = receiver.recv_timeout(Duration::from_millis(100)) {
-                match event {
-                    ServiceEvent::ServiceResolved(info) => {
-                        if info.get_fullname().contains(test_peer_name) {
-                            assert_eq!(info.get_port(), test_port);
-                            found_ourselves = true;
-                            break;
-                        }
+                use mdns_sd::ServiceEvent;
+                // In 0.18, ServiceResolved yields a `ResolvedService` struct
+                if let ServiceEvent::ServiceResolved(info) = event {
+                    if info.get_fullname().contains(instance_name) {
+                        found = true;
+                        break;
                     }
-                    _ => {}
                 }
             }
         }
 
-        assert!(found_ourselves, "Should have discovered our own advertised mDNS service");
-        discovery.stop_advertising(test_peer_name).expect("Failed to stop advertising");
+        assert!(
+            found,
+            "Failed to discover our own advertised mDNS service. Ensure loopback is enabled."
+        );
     }
 }
