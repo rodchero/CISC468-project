@@ -56,4 +56,10 @@ impl<'a> TrustStore<'a> {
             }
         }
     }
+
+    /// Safely updates a peer's public key after a verified key rotation.
+    pub fn update_peer_key(&mut self, identifier: &str, new_pub_key: &[u8; 32]) -> Result<(), P2pError> {
+        self.db.known_peers.insert(identifier.to_string(), new_pub_key.to_vec());
+        self.save()
+    }
 }

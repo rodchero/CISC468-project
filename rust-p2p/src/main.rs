@@ -8,6 +8,7 @@ pub mod trust;
 
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ed25519_dalek::SigningKey;
@@ -15,34 +16,31 @@ use rand_core::OsRng;
 
 use crate::error::P2pError;
 use crate::storage::SecureStorage;
-use crate::app::P2pApp;
+use crate::app::{P2pApp, NodeState, SessionAction};
 use crate::network::discovery::Discovery;
+use crate::trust::TrustStore;
+use crate::protocol::messages::FileMetadata;
 
 fn main() -> Result<(), P2pError> {
     println!("==========================================");
     println!(" CISC 468 P2P Secure File Sharing Client  ");
     println!("==========================================");
 
-    // ---------------------------------------------------------
-    // PHASE 1: Initialization
-    // ---------------------------------------------------------
     let display_name = "RustNode_Roman";
     let password = "super_secret_user_password";
     let storage_dir = "./roman_p2p_vault";
     let salt = b"cisc468_static_salt_1234"; 
+    let port = 9468; 
 
-    println!("[*] Unlocking local storage ...");
+    // 1. Vault & Identity Setup
     let storage = SecureStorage::new(storage_dir, password, salt)?;
-
     let identity_filename = "ed25519_identity.key";
     let my_id_secret = match storage.read_file(identity_filename) {
         Ok(key_bytes) => {
-            println!("[+] Loaded existing encrypted identity key.");
             let secret_bytes: [u8; 32] = key_bytes.try_into().unwrap();
             SigningKey::from_bytes(&secret_bytes)
         }
         Err(_) => {
-            println!("[*] Generating fresh Ed25519 keypair...");
             let mut csprng = OsRng;
             let new_key = SigningKey::generate(&mut csprng);
             storage.write_file(identity_filename, &new_key.to_bytes())?;
@@ -50,90 +48,88 @@ fn main() -> Result<(), P2pError> {
         }
     };
 
-    let p2p_app = P2pApp::new(display_name, &storage);
-    let port = 9468; 
+    // 2. Trust Store & Application State Setup
+    let trust_store = Arc::new(Mutex::new(TrustStore::new(&storage)?));
+    let node_state = Arc::new(Mutex::new(NodeState::default()));
+    
+    // --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
+    let dummy_id = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    let dummy_metadata = FileMetadata {
+        owner_fingerprint: my_id_secret.verifying_key().to_bytes().to_vec(),
+        file_id: dummy_id.clone(),
+        filename: "test_image.png".to_string(),
+        file_size: 1048576,
+        file_hash: vec![0xAA; 32],
+        timestamp: 1678886400,
+        owner_signature: vec![], // In reality, you'd sign this here
+    };
+    {
+        let mut state = node_state.lock().unwrap();
+        state.file_registry.insert(dummy_id.clone(), "test_image.png".to_string());
+        state.metadata_cache.insert(dummy_id, dummy_metadata);
+        
+        // Write the actual bytes to disk so the SecureStorage can stream it if requested
+        let _ = storage.write_file("test_image.png", &[0x00; 1024]);
+    }
+    // -----------------------------------------------------------------------------------------
 
-    println!("[*] Initializing Trust Store...");
-    let trust_store = std::sync::Mutex::new(trust::TrustStore::new(&storage)?);
+    let p2p_app = P2pApp::new(display_name, &storage, Arc::clone(&node_state), Arc::clone(&trust_store));
 
+    // 3. Discovery Setup
     println!("[*] Initializing mDNS discovery...");
     let discovery = Discovery::new()?;
     discovery.start_advertising(display_name, port)?;
     let _browser = discovery.start_browsing()?;
-
     println!("[+] Node is fully initialized and online!\n");
 
-    // ---------------------------------------------------------
-    // PHASE 2: Multithreaded CLI Environment
-    // ---------------------------------------------------------
-    
-    // Create explicit shared references. Since these are just references (&), 
-    // they are `Copy`, meaning they can be safely duplicated into many threads
+    // 4. Multithreaded CLI Environment
     let app_ref = &p2p_app;
     let secret_ref = &my_id_secret;
-    let trust_ref = &trust_store;
+    let ts_listener = Arc::clone(&trust_store);
 
-    // Create a thread scope so we can safely share these references across threads
     thread::scope(|s| {
-
-        // BACKGROUND THREAD: The Listener (Responder)
+        // BACKGROUND THREAD: The Listener
         s.spawn(move || {
             let listener = TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind TCP port");
-            
             for stream in listener.incoming() {
                 if let Ok(mut tcp_stream) = stream {
                     let peer_addr = tcp_stream.peer_addr().unwrap();
-                    println!("\n[+] Incoming connection from: {}", peer_addr);
-                    print!("p2p-node> "); // Re-print the prompt to keep UI clean
-                    io::stdout().flush().unwrap();
+                    let peer_ip = peer_addr.ip().to_string();
+
+                    // Clone the Arc AGAIN for this specific incoming connection thread
+                    let ts_conn = Arc::clone(&ts_listener);
                     
-                    // Spawn a NEW thread for every individual connection
                     s.spawn(move || {
                         match protocol::handshake::run_responder(&mut tcp_stream, secret_ref, display_name) {
                             Ok((tx_key, rx_key, peer_pub)) => {
-                                // TOFU Verification Step
-                                let peer_ip = peer_addr.ip().to_string();
+                                // TOFU Verification
                                 {
-                                    // Lock the Mutex, check the key, drop the lock
-                                    let mut ts = trust_ref.lock().unwrap();
+                                    let mut ts = ts_conn.lock().unwrap();
                                     if let Err(e) = ts.verify_or_trust_peer(&peer_ip, &peer_pub) {
                                         println!("\n[-] Connection rejected by Trust Store: {}", e);
-                                        print!("p2p-node> ");
-                                        io::stdout().flush().unwrap();
-                                        return; // Sever the connection immediately
+                                        return; 
                                     }
                                 }
-
-                                // If TOFU passes, proceed to the secure session
                                 let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                if let Err(e) = app_ref.run_peer_session(session) {
-                                    println!("\n[-] Session with {} ended: {}", peer_addr, e);
-                                    print!("p2p-node> ");
-                                    io::stdout().flush().unwrap();
-                                }
+                                let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::None);
                             }
-                            Err(e) => println!("\n[-] Handshake failed: {}", e),
+                            Err(_) => {}
                         }
                     });
                 }
             }
         });
 
-        // MAIN THREAD: The Interactive CLI
-        // Give the background thread a tiny moment to bind the port before showing prompt
         thread::sleep(std::time::Duration::from_millis(50));
-        
         let stdin = io::stdin();
         let mut buffer = String::new();
 
+        // MAIN THREAD: Interactive CLI
         loop {
             print!("p2p-node> ");
             io::stdout().flush().unwrap();
             buffer.clear();
-
-            if stdin.read_line(&mut buffer).unwrap() == 0 {
-                break; // EOF (Ctrl+D) pressed
-            }
+            if stdin.read_line(&mut buffer).unwrap() == 0 { break; }
 
             let input = buffer.trim();
             if input.is_empty() { continue; }
@@ -144,67 +140,90 @@ fn main() -> Result<(), P2pError> {
             match command {
                 "/help" => {
                     println!("--- Available Commands ---");
-                    println!(" /connect <ip>    : Initiate a connection to a peer");
-                    println!(" /quit            : Shut down the node");
+                    println!(" /list <ip>             : Request a peer's file list");
+                    println!(" /request <ip> <hex_id> : Request a file from a peer");
+                    println!(" /approve <hex_id>      : Approve a pending file request or offer");
+                    println!(" /deny <hex_id>         : Deny a pending file request or offer");
+                    println!(" /local_files           : Show the files currently in your vault");
+                    println!(" /quit                  : Shut down the node");
                 }
-                "/quit" | "/q" => {
-                    println!("Shutting down P2P node...");
-                    std::process::exit(0);
-                }
-                "/connect" => {
-                    if let Some(ip) = args.next() {
-                        let target = format!("{}:{}", ip, port);
-                        let peer_ip = ip.to_string(); // Capture the IP strictly for the database
-                        println!("[*] Attempting to connect to {}...", target);
-                        
-                        // Spawn a thread for the outgoing connection (Initiator)
-                        s.spawn(move || {
-                            match TcpStream::connect(&target) {
-                                Ok(mut tcp_stream) => {
-                                    println!("\n[+] TCP connection established. Running handshake...");
-                                    
-                                    match protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
-                                        Ok((tx_key, rx_key, peer_pub)) => {
-                                            
-                                            // --- TOFU VERIFICATION ---
-                                            {
-                                                let mut ts = trust_ref.lock().unwrap();
-                                                if let Err(e) = ts.verify_or_trust_peer(&peer_ip, &peer_pub) {
-                                                    println!("\n[-] SECURITY ALERT: Connection rejected by Trust Store: {}", e);
-                                                    print!("p2p-node> ");
-                                                    io::stdout().flush().unwrap();
-                                                    return; // Sever the TCP connection immediately
-                                                }
-                                            }
-                                            // -------------------------
-
-                                            println!("\n[+] Secure connection established with {}!", target);
-                                            let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                            
-                                            if let Err(e) = app_ref.run_peer_session(session) {
-                                                println!("\n[-] Session ended: {}", e);
-                                            }
-                                        }
-                                        Err(e) => println!("\n[-] Handshake failed: {}", e),
-                                    }
-                                }
-                                Err(e) => println!("\n[-] Failed to connect to {}: {}", target, e),
-                            }
-                            
-                            // Always reprint the prompt when the background thread finishes
-                            print!("p2p-node> ");
-                            io::stdout().flush().unwrap();
-                        });
-                    } else {
-                        println!("Usage: /connect <ip_address>");
+                "/quit" | "/q" => std::process::exit(0),
+                "/local_files" => {
+                    let state = node_state.lock().unwrap();
+                    println!("--- Local File Registry ---");
+                    for (id, filename) in &state.file_registry {
+                        println!(" ID: {} | File: {}", hex::encode(&id[..4]), filename);
                     }
                 }
-                _ => {
-                    println!("Unknown command: '{}'. Type /help for options.", command);
+                "/approve" | "/deny" => {
+                    if let Some(id) = args.next() {
+                        let mut state = node_state.lock().unwrap();
+                        if state.pending_consents.contains_key(id) {
+                            let decision = command == "/approve";
+                            state.pending_consents.insert(id.to_string(), Some(decision));
+                            println!("[+] Marked request {} as {}", id, if decision { "APPROVED" } else { "DENIED" });
+                        } else {
+                            println!("[-] No pending request found with ID {}", id);
+                        }
+                    } else {
+                        println!("Usage: {} <hex_id>", command);
+                    }
                 }
+                "/list" => {
+                    if let Some(ip) = args.next() {
+                        let target = format!("{}:{}", ip, port);
+                        let peer_ip = ip.to_string();
+
+                        // Clone the Arc for the outgoing list request thread
+                        let ts_cmd = Arc::clone(&trust_store);
+                        
+                        s.spawn(move || {
+                            if let Ok(mut tcp_stream) = TcpStream::connect(&target) {
+                                if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                    {
+                                        let mut ts = ts_cmd.lock().unwrap();
+                                        if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                    }
+                                    let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                    let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::RequestFileList);
+                                }
+                            }
+                        });
+                    } else { println!("Usage: /list <ip_address>"); }
+                }
+                "/request" => {
+                    if let (Some(ip), Some(hex_id)) = (args.next(), args.next()) {
+                        if let Ok(file_id) = hex::decode(hex_id) {
+                            // Pad to 32 bytes just in case they typed the short ID
+                            let mut full_id = vec![0u8; 32];
+                            let copy_len = std::cmp::min(file_id.len(), 32);
+                            full_id[..copy_len].copy_from_slice(&file_id[..copy_len]);
+
+                            let target = format!("{}:{}", ip, port);
+                            let peer_ip = ip.to_string();
+
+                            // Clone the Arc for the outgoing file request thread
+                            let ts_cmd = Arc::clone(&trust_store);
+                            
+                            s.spawn(move || {
+                                if let Ok(mut tcp_stream) = TcpStream::connect(&target) {
+                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                        {
+                                            let mut ts = ts_cmd.lock().unwrap();
+                                            if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                        }
+                                        let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                        let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::RequestFile(full_id));
+                                    }
+                                }
+                            });
+                        } else { println!("[-] Invalid hex ID"); }
+                    } else { println!("Usage: /request <ip_address> <hex_id>"); }
+                }
+                _ => println!("Unknown command. Type /help."),
             }
         }
-    }); // End of thread::scope
+    });
 
     Ok(())
 }
