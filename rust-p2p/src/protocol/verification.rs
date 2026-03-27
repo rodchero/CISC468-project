@@ -1,70 +1,116 @@
 use ed25519_dalek::{Signer, Verifier, Signature, SigningKey, VerifyingKey};
-use prost::Message;
+use prost::Message; // Still needed if KeyRotationNotice uses it
 use crate::error::P2pError;
 use crate::protocol::messages::{FileMetadata, KeyRotationNotice};
 
-/// Signs the file metadata with the owner's identity key.
-/// Requirement 10.3: The owner signs the canonical metadata bytes with Ed25519.
-pub fn sign_metadata(key: &SigningKey, metadata: &mut FileMetadata) -> Result<(), P2pError> {
-    // 1. Clear any existing signature so we sign the raw data
-    metadata.owner_signature.clear();
-    
-    // 2. Serialize to bytes
+/// Helper function to build the exact canonical bytes for FileMetadata signing.
+/// Matches Python format: owner_fingerprint || file_id || filename_utf8 || file_size_BE || file_hash || timestamp_BE
+fn build_canonical_metadata_bytes(metadata: &FileMetadata) -> Vec<u8> {
     let mut buf = Vec::new();
-    metadata.encode(&mut buf).map_err(|_| P2pError::InvalidMessage)?;
     
-    // 3. Sign the bytes and attach
-    let signature = key.sign(&buf);
+    // 1. owner_fingerprint (raw bytes)
+    buf.extend_from_slice(&metadata.owner_fingerprint);
+    // 2. file_id (raw bytes)
+    buf.extend_from_slice(&metadata.file_id);
+    // 3. filename (UTF-8 bytes)
+    buf.extend_from_slice(metadata.filename.as_bytes());
+    // 4. file_size (8-byte big-endian)
+    buf.extend_from_slice(&metadata.file_size.to_be_bytes());
+    // 5. file_hash (raw bytes)
+    buf.extend_from_slice(&metadata.file_hash);
+    // 6. timestamp (8-byte big-endian)
+    buf.extend_from_slice(&metadata.timestamp.to_be_bytes());
+    
+    buf
+}
+
+/// Helper function to build the exact canonical bytes for KeyRotationNotice signing.
+/// Matches Python format: old_pubkey(32) || new_pubkey(32) || timestamp(8-byte BE)
+fn build_canonical_key_rotation_bytes(notice: &KeyRotationNotice) -> Vec<u8> {
+    // 32 bytes + 32 bytes + 8 bytes = 72 bytes total
+    let mut buf = Vec::with_capacity(72); 
+    
+    // 1. old_pubkey (raw 32 bytes)
+    buf.extend_from_slice(&notice.old_public_key);
+    // 2. new_pubkey (raw 32 bytes)
+    buf.extend_from_slice(&notice.new_public_key);
+    // 3. timestamp (8-byte big-endian)
+    buf.extend_from_slice(&notice.timestamp.to_be_bytes());
+    
+    buf
+}
+
+/// Signs the file metadata with the owner's identity key using canonical bytes.
+pub fn sign_metadata(key: &SigningKey, metadata: &mut FileMetadata) -> Result<(), P2pError> {
+    let canonical_bytes = build_canonical_metadata_bytes(metadata);
+    
+    let signature = key.sign(&canonical_bytes);
     metadata.owner_signature = signature.to_bytes().to_vec();
     
     Ok(())
 }
 
-/// Verifies that the metadata signature is authentic and hasn't been tampered with.
-/// Requirement 10.4: Verify the owner's signature on the metadata.
+/// Verifies that the metadata signature is authentic using the canonical bytes.
 pub fn verify_metadata(metadata: &FileMetadata, owner_pub_key_bytes: &[u8; 32]) -> Result<(), P2pError> {
-    // 1. We must verify against a copy that has the signature field cleared
-    let mut meta_copy = metadata.clone();
-    let provided_signature = meta_copy.owner_signature.clone();
-    meta_copy.owner_signature.clear();
+    let canonical_bytes = build_canonical_metadata_bytes(metadata);
 
-    let mut buf = Vec::new();
-    meta_copy.encode(&mut buf).map_err(|_| P2pError::InvalidMessage)?;
+    let sig = Signature::from_slice(&metadata.owner_signature)
+        .map_err(|_| P2pError::InvalidFileSignature)?;
+        
+    let verifier = VerifyingKey::from_bytes(owner_pub_key_bytes)
+        .map_err(|_| P2pError::UntrustedKey)?;
 
-    // 2. Load the signature and the public key
-    let sig = Signature::from_slice(&provided_signature).map_err(|_| P2pError::InvalidFileSignature)?;
-    let verifier = VerifyingKey::from_bytes(owner_pub_key_bytes).map_err(|_| P2pError::UntrustedKey)?;
-
-    // 3. Verify
-    verifier.verify(&buf, &sig).map_err(|_| P2pError::InvalidFileSignature)
+    verifier.verify(&canonical_bytes, &sig).map_err(|_| P2pError::InvalidFileSignature)
 }
 
-/// Verifies a Key Rotation Notice. 
-/// Requirement 11.2: It must be validly signed by BOTH the old key and the new key.
+/// Verifies a Key Rotation Notice using canonical bytes to match the Python client.
 pub fn verify_key_rotation(notice: &KeyRotationNotice) -> Result<(), P2pError> {
-    // 1. Create a copy of the notice with both signatures cleared to get the canonical bytes
-    let mut notice_copy = notice.clone();
-    let old_sig_bytes = notice_copy.old_signature.clone();
-    let new_sig_bytes = notice_copy.new_signature.clone();
-    notice_copy.old_signature.clear();
-    notice_copy.new_signature.clear();
+    // 1. Build the canonical bytes agreed upon with the Python client
+    let canonical_bytes = build_canonical_key_rotation_bytes(notice);
 
-    let mut buf = Vec::new();
-    notice_copy.encode(&mut buf).map_err(|_| P2pError::InvalidMessage)?;
+    // 2. Extract the public keys
+    let old_pub_key: [u8; 32] = notice.old_public_key.clone().try_into()
+        .map_err(|_| P2pError::InvalidMessage)?;
+    let new_pub_key: [u8; 32] = notice.new_public_key.clone().try_into()
+        .map_err(|_| P2pError::InvalidMessage)?;
 
-    // 2. Load the keys
-    let old_pub_key: [u8; 32] = notice.old_public_key.clone().try_into().map_err(|_| P2pError::InvalidMessage)?;
-    let new_pub_key: [u8; 32] = notice.new_public_key.clone().try_into().map_err(|_| P2pError::InvalidMessage)?;
+    // 3. Create verifiers
+    let old_verifier = VerifyingKey::from_bytes(&old_pub_key)
+        .map_err(|_| P2pError::KeyRotationInvalid)?;
+    let new_verifier = VerifyingKey::from_bytes(&new_pub_key)
+        .map_err(|_| P2pError::KeyRotationInvalid)?;
 
-    let old_verifier = VerifyingKey::from_bytes(&old_pub_key).map_err(|_| P2pError::KeyRotationInvalid)?;
-    let new_verifier = VerifyingKey::from_bytes(&new_pub_key).map_err(|_| P2pError::KeyRotationInvalid)?;
+    // 4. Extract signatures
+    let old_sig = Signature::from_slice(&notice.old_signature)
+        .map_err(|_| P2pError::KeyRotationInvalid)?;
+    let new_sig = Signature::from_slice(&notice.new_signature)
+        .map_err(|_| P2pError::KeyRotationInvalid)?;
 
-    let old_sig = Signature::from_slice(&old_sig_bytes).map_err(|_| P2pError::KeyRotationInvalid)?;
-    let new_sig = Signature::from_slice(&new_sig_bytes).map_err(|_| P2pError::KeyRotationInvalid)?;
-
-    // 3. Verify BOTH signatures against the canonical bytes
-    old_verifier.verify(&buf, &old_sig).map_err(|_| P2pError::KeyRotationInvalid)?;
-    new_verifier.verify(&buf, &new_sig).map_err(|_| P2pError::KeyRotationInvalid)?;
+    // 5. Verify BOTH signatures against the canonical bytes
+    old_verifier.verify(&canonical_bytes, &old_sig).map_err(|_| P2pError::KeyRotationInvalid)?;
+    new_verifier.verify(&canonical_bytes, &new_sig).map_err(|_| P2pError::KeyRotationInvalid)?;
 
     Ok(())
+}
+
+/// (Optional) Generates a Key Rotation Notice and signs it with both the old and new keys.
+pub fn sign_key_rotation(
+    old_key: &SigningKey, 
+    new_key: &SigningKey, 
+    timestamp: u64
+) -> Result<KeyRotationNotice, P2pError> {
+    let mut notice = KeyRotationNotice {
+        old_public_key: old_key.verifying_key().to_bytes().to_vec(),
+        new_public_key: new_key.verifying_key().to_bytes().to_vec(),
+        timestamp,
+        old_signature: vec![],
+        new_signature: vec![],
+    };
+
+    let canonical_bytes = build_canonical_key_rotation_bytes(&notice);
+
+    notice.old_signature = old_key.sign(&canonical_bytes).to_bytes().to_vec();
+    notice.new_signature = new_key.sign(&canonical_bytes).to_bytes().to_vec();
+
+    Ok(notice)
 }
