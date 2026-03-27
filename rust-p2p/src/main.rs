@@ -105,23 +105,36 @@ fn main() -> Result<(), P2pError> {
 
     // Spawn a dedicated background thread to listen for peer announcements
     thread::spawn(move || {
+        // This loop blocks and waits for mDNS events
         while let Ok(event) = browser.recv() {
-            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
-                // We don't want to discover ourselves!
-                if !info.get_fullname().contains(&my_name) {
-                    // Extract the first available IP address (usually IPv4)
-                    if let Some(ip) = info.get_addresses().iter().next() {
-                        // Print a nice notification directly above the prompt
-                        println!("\n\n[+] 📡 mDNS DISCOVERY: Found Peer!");
-                        println!("    -> Name: {}", info.get_fullname());
-                        println!("    -> IP Address: {}", ip);
-                        println!("    -> Try: /list {}", ip);
-                        
-                        // Reprint the CLI prompt so the UI stays clean
+            match event {
+                // PHASE 1: A peer broadcasted their presence, but we don't know their IP yet
+                mdns_sd::ServiceEvent::ServiceFound(_service_type, fullname) => {
+                    if !fullname.contains(&my_name) {
+                        println!("\n[*] mDNS: Heard broadcast from '{}'. Resolving IP address...", fullname);
                         print!("p2p-node> ");
                         let _ = io::stdout().flush();
                     }
                 }
+                // PHASE 2: We successfully mapped their broadcast to a physical IP address
+                mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                    if !info.get_fullname().contains(&my_name) {
+                        let ips: Vec<String> = info.get_addresses().iter().map(|ip| ip.to_string()).collect();
+                        
+                        if ips.is_empty() {
+                            println!("\n[-] mDNS ERROR: Resolved '{}' but couldn't extract an IP address!", info.get_fullname());
+                        } else {
+                            println!("\n\n[+] 📡 mDNS DISCOVERY: Found Peer!");
+                            println!("    -> Name: {}", info.get_fullname());
+                            println!("    -> IP Addresses: {:?}", ips);
+                            println!("    -> Try: /list {}", ips[0]);
+                        }
+                        print!("p2p-node> ");
+                        let _ = io::stdout().flush();
+                    }
+                }
+                // Ignore ServiceRemoved and other background noise
+                _ => {} 
             }
         }
     });

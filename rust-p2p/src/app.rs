@@ -113,12 +113,19 @@ impl<'a> P2pApp<'a> {
                 "FileResponse" => println!("\n[+] Received FileResponse. Transfer status updated."),
                 "FileChunk" => self.handle_file_chunk(&payload)?,
                 "FileTransferComplete" => self.handle_file_transfer_complete(&payload)?, 
+                "ErrorMessage" => self.handle_error_message(&payload)?,
                 _ => {
                     println!("\n[-] Unhandled message type: {}", msg_type);
                     self.send_error(&mut session, "INVALID_MESSAGE", "Unknown message type")?;
                 }
             }
         }
+    }
+
+    fn handle_error_message(&self, payload: &[u8]) -> Result<(), P2pError> {
+        let err = ErrorMessage::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
+        println!("\n[-] Received error: {} - {}", err.error_code, err.description);
+        Ok(())
     }
 
     /// Returns actual files registered in the NodeState
