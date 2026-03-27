@@ -95,35 +95,30 @@ impl<S: Read + Write> SecureSession<S> {
     }
 }
 
-// --- Unit Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
 
     #[test]
-    fn test_secure_session_encryption_cycle() {
+    fn test_secure_session_encryption_and_replay_protection() {
         let tx_key = [1u8; 32];
         let rx_key = [2u8; 32];
-        
-        // We use a memory buffer instead of a real TCP socket for testing
         let mut network_buffer = Cursor::new(Vec::new());
 
-        // 1. Send a message using the Alice session
-        let mut alice_session = SecureSession::new(&mut network_buffer, tx_key, rx_key);
-        let secret_data = b"Give me the file list!";
-        alice_session.send_encrypted("FileListRequest", secret_data).unwrap();
-        assert_eq!(alice_session.tx_counter, 1); // Counter should increment
+        let mut alice = SecureSession::new(&mut network_buffer, tx_key, rx_key);
+        alice.send_encrypted("TestMsg", b"Data1").unwrap();
+        alice.send_encrypted("TestMsg", b"Data2").unwrap();
 
-        // Reset the cursor position to the beginning so Bob can read from it
         network_buffer.set_position(0);
+        let mut bob = SecureSession::new(&mut network_buffer, rx_key, tx_key);
+        
+        let (_, msg1) = bob.receive_encrypted().unwrap();
+        assert_eq!(msg1, b"Data1");
+        assert_eq!(bob.expected_rx_counter, 1);
 
-        // 2. Read the message using the Bob session (note keys are swapped!)
-        let mut bob_session = SecureSession::new(&mut network_buffer, rx_key, tx_key);
-        let (msg_type, decrypted_data) = bob_session.receive_encrypted().unwrap();
-
-        assert_eq!(msg_type, "FileListRequest");
-        assert_eq!(decrypted_data, secret_data);
-        assert_eq!(bob_session.expected_rx_counter, 1);
+        let (_, msg2) = bob.receive_encrypted().unwrap();
+        assert_eq!(msg2, b"Data2");
+        assert_eq!(bob.expected_rx_counter, 2);
     }
 }

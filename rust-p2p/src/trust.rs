@@ -63,3 +63,35 @@ impl<'a> TrustStore<'a> {
         self.save()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use crate::storage::SecureStorage;
+
+    #[test]
+    fn test_tofu_logic() {
+        let dir = tempdir().unwrap();
+        let salt = SecureStorage::generate_salt();
+        let storage = SecureStorage::new(dir.path(), "pass", &salt).unwrap();
+        let mut trust_store = TrustStore::new(&storage).unwrap();
+
+        let ip = "192.168.1.5";
+        let key1 = [0xAA; 32];
+        let key2 = [0xBB; 32];
+
+        // 1. First connection should succeed and save key1
+        assert!(trust_store.verify_or_trust_peer(ip, &key1).is_ok());
+
+        // 2. Second connection with SAME key should succeed
+        assert!(trust_store.verify_or_trust_peer(ip, &key1).is_ok());
+
+        // 3. Connection with CHANGED key should throw a security error
+        assert!(trust_store.verify_or_trust_peer(ip, &key2).is_err());
+
+        // 4. Manual key update should allow the new key
+        trust_store.update_peer_key(ip, &key2).unwrap();
+        assert!(trust_store.verify_or_trust_peer(ip, &key2).is_ok());
+    }
+}

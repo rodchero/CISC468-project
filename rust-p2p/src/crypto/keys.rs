@@ -28,15 +28,29 @@ mod tests {
 
     #[test]
     fn test_identity_key_generation() {
-        let (secret, pub_bytes) = generate_identity_keypair();
-        assert_eq!(pub_bytes.len(), 32, "Ed25519 public key must be 32 bytes");
-        // Ensure the derived public key matches the bytes
-        assert_eq!(secret.verifying_key().to_bytes(), pub_bytes);
+        let (secret, pub_key) = generate_identity_keypair();
+        assert_eq!(pub_key.len(), 32);
+        
+        // Ensure the key can actually sign and verify
+        use ed25519_dalek::{Signer, Verifier};
+        let message = b"test message";
+        let signature = secret.sign(message);
+        let verifier = ed25519_dalek::VerifyingKey::from_bytes(&pub_key).unwrap();
+        assert!(verifier.verify(message, &signature).is_ok());
     }
 
     #[test]
-    fn test_ephemeral_key_generation() {
-        let (_secret, pub_bytes) = generate_ephemeral_keypair();
-        assert_eq!(pub_bytes.len(), 32, "X25519 public key must be 32 bytes");
+    fn test_ephemeral_key_generation_and_dh() {
+        let (alice_sec, alice_pub) = generate_ephemeral_keypair();
+        let (bob_sec, bob_pub) = generate_ephemeral_keypair();
+
+        // Alice computes shared secret using Bob's public key
+        let alice_shared = alice_sec.diffie_hellman(&x25519_dalek::PublicKey::from(bob_pub));
+        
+        // Bob computes shared secret using Alice's public key
+        let bob_shared = bob_sec.diffie_hellman(&x25519_dalek::PublicKey::from(alice_pub));
+
+        // They must match perfectly
+        assert_eq!(alice_shared.as_bytes(), bob_shared.as_bytes());
     }
 }

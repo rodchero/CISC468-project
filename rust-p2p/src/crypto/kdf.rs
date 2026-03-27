@@ -31,12 +31,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hkdf_derivation() {
-        let dummy_secret = [42u8; 32];
-        let (k1, k2) = derive_session_keys(&dummy_secret);
-        
-        assert_eq!(k1.len(), 32);
-        assert_eq!(k2.len(), 32);
-        assert_ne!(k1, k2, "Directional keys should be different");
+    fn test_hkdf_derivation_determinism() {
+        let shared_secret = [0x42; 32];
+        let (tx1, rx1) = derive_session_keys(&shared_secret);
+        let (tx2, rx2) = derive_session_keys(&shared_secret);
+
+        assert_eq!(tx1, tx2, "HKDF should be deterministic");
+        assert_eq!(rx1, rx2, "HKDF should be deterministic");
+        assert_ne!(tx1, rx1, "TX and RX keys must be distinct");
+    }
+
+    #[test]
+    fn test_hkdf_different_secrets() {
+        let (tx1, _) = derive_session_keys(&[0x01; 32]);
+        let (tx2, _) = derive_session_keys(&[0x02; 32]);
+        assert_ne!(tx1, tx2, "Different secrets must yield different keys");
     }
 }

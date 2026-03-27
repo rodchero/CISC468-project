@@ -1,5 +1,4 @@
 use ed25519_dalek::{Signer, Verifier, Signature, SigningKey, VerifyingKey};
-use prost::Message; // Still needed if KeyRotationNotice uses it
 use crate::error::P2pError;
 use crate::protocol::messages::{FileMetadata, KeyRotationNotice};
 
@@ -113,4 +112,45 @@ pub fn sign_key_rotation(
     notice.new_signature = new_key.sign(&canonical_bytes).to_bytes().to_vec();
 
     Ok(notice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::keys::generate_identity_keypair;
+    use rand_core::OsRng;
+
+    #[test]
+    fn test_metadata_signing_and_verification() {
+        let (secret, pub_key) = generate_identity_keypair();
+        
+        let mut metadata = FileMetadata {
+            owner_fingerprint: pub_key.to_vec(),
+            file_id: vec![1, 2, 3],
+            filename: "doc.txt".to_string(),
+            file_size: 1024,
+            file_hash: vec![0xAA; 32],
+            timestamp: 100000,
+            owner_signature: vec![],
+        };
+
+        sign_metadata(&secret, &mut metadata).unwrap();
+        assert!(!metadata.owner_signature.is_empty());
+
+        // Should verify successfully
+        assert!(verify_metadata(&metadata, &pub_key).is_ok());
+
+        // Tampering with the filename should break the signature
+        metadata.filename = "malicious.txt".to_string();
+        assert!(verify_metadata(&metadata, &pub_key).is_err());
+    }
+
+    #[test]
+    fn test_key_rotation_verification() {
+        let old_key = SigningKey::generate(&mut OsRng);
+        let new_key = SigningKey::generate(&mut OsRng);
+        
+        let notice = sign_key_rotation(&old_key, &new_key, 123456).unwrap();
+        assert!(verify_key_rotation(&notice).is_ok());
+    }
 }

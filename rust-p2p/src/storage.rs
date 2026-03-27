@@ -151,35 +151,38 @@ fn decrypt_local_data(master_key: &AesKeyBytes, stored_data: &[u8]) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir; 
+    use tempfile::tempdir;
 
     #[test]
-    fn test_secure_storage_read_write_cycle() {
-        // Create a temporary directory that will automatically be deleted after the test
+    fn test_secure_storage_lifecycle() {
         let dir = tempdir().unwrap();
-        let password = "test_password";
         let salt = SecureStorage::generate_salt();
+        let storage = SecureStorage::new(dir.path(), "password", &salt).unwrap();
 
-        // Initialize the storage vault
-        let storage = SecureStorage::new(dir.path(), password, &salt).unwrap();
+        let filename = "secret.txt";
+        let data = b"Confidential info";
 
-        let filename = "trusted_contacts.db";
-        let secret_data = b"Alice: KeyA, Bob: KeyB";
-
-        // Write the encrypted file
-        storage.write_file(filename, secret_data).expect("Should write successfully");
-
-        // Read it back
-        let retrieved_data = storage.read_file(filename).expect("Should read successfully");
+        // Write
+        storage.write_file(filename, data).unwrap();
         
-        assert_eq!(retrieved_data, secret_data);
+        // Read
+        let read_data = storage.read_file(filename).unwrap();
+        assert_eq!(read_data, data);
 
-        // Verify the file actually exists on disk
-        let file_path = dir.path().join(filename);
-        assert!(file_path.exists());
+        // Delete
+        storage.delete_file(filename).unwrap();
+        assert!(storage.read_file(filename).is_err());
+    }
 
-        // Attempting to read it as plaintext directly from disk should fail to match
-        let raw_disk_bytes = fs::read(&file_path).unwrap();
-        assert_ne!(raw_disk_bytes, secret_data);
+    #[test]
+    fn test_storage_wrong_password() {
+        let dir = tempdir().unwrap();
+        let salt = SecureStorage::generate_salt();
+        let storage1 = SecureStorage::new(dir.path(), "correct_pass", &salt).unwrap();
+        storage1.write_file("file.txt", b"data").unwrap();
+
+        let storage2 = SecureStorage::new(dir.path(), "wrong_pass", &salt).unwrap();
+        // Trying to read a file encrypted with a different master key should fail
+        assert!(storage2.read_file("file.txt").is_err());
     }
 }

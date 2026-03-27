@@ -46,14 +46,28 @@ pub fn compute_file_id(filename: &str, file_hash: &Sha256HashBytes, file_size: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_file_hashing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"Hello World").unwrap();
+
+        let hash = hash_file(temp_file.path()).unwrap();
+        // Known SHA-256 for "Hello World"
+        let expected_hex = "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e";
+        assert_eq!(hex::encode(hash), expected_hex);
+    }
 
     #[test]
     fn test_file_id_computation() {
-        let filename = "test.txt";
-        let hash = [1u8; 32];
-        let size: u64 = 1024;
-        
-        let file_id = compute_file_id(filename, &hash, size);
-        assert_eq!(file_id.len(), 32);
+        let hash = [0u8; 32];
+        let id1 = compute_file_id("test.txt", &hash, 100);
+        let id2 = compute_file_id("test.txt", &hash, 100);
+        let id3 = compute_file_id("different.txt", &hash, 100);
+
+        assert_eq!(id1, id2, "Identical inputs should yield identical IDs");
+        assert_ne!(id1, id3, "Different filenames should yield different IDs");
     }
 }

@@ -7,11 +7,11 @@ use prost::Message;
 use crate::error::P2pError;
 use crate::protocol::session::SecureSession;
 use crate::protocol::messages::{
-    p2p_message, ErrorMessage, FileListRequest, FileListResponse, 
+    ErrorMessage, FileListRequest, FileListResponse, 
     FileRequest, FileResponse, FileChunk, FileTransferComplete, FileMetadata,
     FileSendOffer, KeyRotationNotice
 };
-use crate::protocol::verification::{verify_metadata, verify_key_rotation};
+use crate::protocol::verification::{verify_key_rotation};
 use crate::storage::SecureStorage;
 use crate::trust::TrustStore;
 

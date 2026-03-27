@@ -39,28 +39,29 @@ mod tests {
 
     #[test]
     fn test_encryption_decryption_cycle() {
-        let key = [1u8; 32];
-        let counter = 1;
-        let plaintext = b"Hello, Python peer!";
+        let key = [0xAA; 32];
+        let plaintext = b"Top secret file chunk";
+        let counter = 5;
 
-        // Encrypt
         let ciphertext = encrypt_message(&key, counter, plaintext).unwrap();
-        assert_ne!(plaintext.as_slice(), ciphertext.as_slice());
+        assert_ne!(ciphertext, plaintext);
 
-        // Decrypt
         let decrypted = decrypt_message(&key, counter, &ciphertext).unwrap();
-        assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]
-    fn test_decryption_fails_with_wrong_counter() {
-        let key = [1u8; 32];
-        let plaintext = b"Secret data";
+    fn test_decryption_fails_with_wrong_counter_or_key() {
+        let key = [0xAA; 32];
+        let wrong_key = [0xBB; 32];
+        let plaintext = b"Data";
         
-        let ciphertext = encrypt_message(&key, 5, plaintext).unwrap();
+        let ciphertext = encrypt_message(&key, 1, plaintext).unwrap();
+
+        // Wrong counter should fail (Nonce mismatch)
+        assert!(decrypt_message(&key, 2, &ciphertext).is_err());
         
-        // Attempt to decrypt with counter 6
-        let result = decrypt_message(&key, 6, &ciphertext);
-        assert!(result.is_err(), "Decryption should fail with incorrect nonce/counter");
+        // Wrong key should fail
+        assert!(decrypt_message(&wrong_key, 1, &ciphertext).is_err());
     }
 }

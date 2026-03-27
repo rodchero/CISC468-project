@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read};
 use crate::error::P2pError;
 
 /// Prepends a 4-byte unsigned big-endian length prefix to a payload.
@@ -48,53 +48,32 @@ pub fn read_framed_message<R: Read>(stream: &mut R) -> Result<Vec<u8>, P2pError>
     Ok(payload_buf)
 }
 
-// --- Unit Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
 
     #[test]
-    fn test_frame_message_adds_correct_length_prefix() {
-        let payload = b"hello world"; // 11 bytes long
+    fn test_frame_and_read_message() {
+        let payload = b"Hello P2P Network";
         let framed = frame_message(payload);
-
-        // Total length should be 4 (prefix) + 11 (payload) = 15
-        assert_eq!(framed.len(), 15);
-
-        // The first 4 bytes should represent the number 11 in big-endian
-        assert_eq!(&framed[0..4], &11u32.to_be_bytes());
         
-        // The rest should be the payload
-        assert_eq!(&framed[4..], payload);
+        // 4 bytes length + payload
+        assert_eq!(framed.len(), 4 + payload.len());
+        
+        // Ensure length prefix is correct (Big Endian)
+        let expected_len = payload.len() as u32;
+        assert_eq!(&framed[0..4], &expected_len.to_be_bytes());
+
+        // Test reading it back
+        let mut cursor = Cursor::new(framed);
+        let read_back = read_framed_message(&mut cursor).unwrap();
+        assert_eq!(read_back, payload);
     }
 
     #[test]
-    fn test_read_framed_message_success() {
-        // Create a fake network stream in memory using Cursor
-        let original_payload = b"test payload";
-        let framed_data = frame_message(original_payload);
-        
-        // Cursor implements the `Read` trait, so our function treats it like a TCP stream!
-        let mut mock_stream = Cursor::new(framed_data);
-
-        let result = read_framed_message(&mut mock_stream).expect("Reading should succeed");
-        
-        assert_eq!(result, original_payload);
-    }
-
-    #[test]
-    fn test_read_framed_message_incomplete_payload() {
-        let payload = b"12345";
-        let mut framed_data = frame_message(payload);
-        
-        // Corrupt the data by dropping the last byte simulating a broken network connection
-        framed_data.pop(); 
-
-        let mut mock_stream = Cursor::new(framed_data);
-        let result = read_framed_message(&mut mock_stream);
-        
-        // It should throw an IO error because it expected 5 bytes but only found 4
-        assert!(matches!(result, Err(P2pError::IoError(_))));
+    fn test_read_framed_message_incomplete() {
+        let mut cursor = Cursor::new(vec![0, 0, 0, 10, 1, 2, 3]); // Length 10, but only 3 bytes provided
+        assert!(read_framed_message(&mut cursor).is_err());
     }
 }
