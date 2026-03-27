@@ -768,6 +768,8 @@ dependencies = [
  "prost-build",
  "rand",
  "rand_core",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "x25519-dalek",

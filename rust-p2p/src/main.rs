@@ -4,6 +4,7 @@ pub mod error;
 pub mod network;
 pub mod protocol;
 pub mod storage;
+pub mod trust;
 
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
@@ -52,6 +53,9 @@ fn main() -> Result<(), P2pError> {
     let p2p_app = P2pApp::new(display_name, &storage);
     let port = 9468; 
 
+    println!("[*] Initializing Trust Store...");
+    let trust_store = std::sync::Mutex::new(trust::TrustStore::new(&storage)?);
+
     println!("[*] Initializing mDNS discovery...");
     let discovery = Discovery::new()?;
     discovery.start_advertising(display_name, port)?;
@@ -64,9 +68,10 @@ fn main() -> Result<(), P2pError> {
     // ---------------------------------------------------------
     
     // Create explicit shared references. Since these are just references (&), 
-    // they are `Copy`, meaning they can be safely duplicated into many threads!
+    // they are `Copy`, meaning they can be safely duplicated into many threads
     let app_ref = &p2p_app;
     let secret_ref = &my_id_secret;
+    let trust_ref = &trust_store;
 
     // Create a thread scope so we can safely share these references across threads
     thread::scope(|s| {
@@ -84,9 +89,22 @@ fn main() -> Result<(), P2pError> {
                     
                     // Spawn a NEW thread for every individual connection
                     s.spawn(move || {
-                        // Use our copied references here!
                         match protocol::handshake::run_responder(&mut tcp_stream, secret_ref, display_name) {
-                            Ok((tx_key, rx_key, _peer_pub)) => {
+                            Ok((tx_key, rx_key, peer_pub)) => {
+                                // TOFU Verification Step
+                                let peer_ip = peer_addr.ip().to_string();
+                                {
+                                    // Lock the Mutex, check the key, drop the lock
+                                    let mut ts = trust_ref.lock().unwrap();
+                                    if let Err(e) = ts.verify_or_trust_peer(&peer_ip, &peer_pub) {
+                                        println!("\n[-] Connection rejected by Trust Store: {}", e);
+                                        print!("p2p-node> ");
+                                        io::stdout().flush().unwrap();
+                                        return; // Sever the connection immediately
+                                    }
+                                }
+
+                                // If TOFU passes, proceed to the secure session
                                 let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                                 if let Err(e) = app_ref.run_peer_session(session) {
                                     println!("\n[-] Session with {} ended: {}", peer_addr, e);
@@ -136,6 +154,7 @@ fn main() -> Result<(), P2pError> {
                 "/connect" => {
                     if let Some(ip) = args.next() {
                         let target = format!("{}:{}", ip, port);
+                        let peer_ip = ip.to_string(); // Capture the IP strictly for the database
                         println!("[*] Attempting to connect to {}...", target);
                         
                         // Spawn a thread for the outgoing connection (Initiator)
@@ -143,11 +162,25 @@ fn main() -> Result<(), P2pError> {
                             match TcpStream::connect(&target) {
                                 Ok(mut tcp_stream) => {
                                     println!("\n[+] TCP connection established. Running handshake...");
-                                    // Use our copied references here too!
+                                    
                                     match protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
-                                        Ok((tx_key, rx_key, _peer_pub)) => {
+                                        Ok((tx_key, rx_key, peer_pub)) => {
+                                            
+                                            // --- TOFU VERIFICATION ---
+                                            {
+                                                let mut ts = trust_ref.lock().unwrap();
+                                                if let Err(e) = ts.verify_or_trust_peer(&peer_ip, &peer_pub) {
+                                                    println!("\n[-] SECURITY ALERT: Connection rejected by Trust Store: {}", e);
+                                                    print!("p2p-node> ");
+                                                    io::stdout().flush().unwrap();
+                                                    return; // Sever the TCP connection immediately
+                                                }
+                                            }
+                                            // -------------------------
+
                                             println!("\n[+] Secure connection established with {}!", target);
                                             let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                            
                                             if let Err(e) = app_ref.run_peer_session(session) {
                                                 println!("\n[-] Session ended: {}", e);
                                             }
@@ -157,6 +190,8 @@ fn main() -> Result<(), P2pError> {
                                 }
                                 Err(e) => println!("\n[-] Failed to connect to {}: {}", target, e),
                             }
+                            
+                            // Always reprint the prompt when the background thread finishes
                             print!("p2p-node> ");
                             io::stdout().flush().unwrap();
                         });
