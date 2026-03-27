@@ -96,7 +96,36 @@ fn main() -> Result<(), P2pError> {
     println!("[*] Initializing mDNS discovery...");
     let discovery = Discovery::new()?;
     discovery.start_advertising(display_name, port)?;
-    let _browser = discovery.start_browsing()?;
+    
+    // Keep the receiver instead of throwing it away
+    let browser = discovery.start_browsing()?;
+    
+    // Clone the display name so we can filter out our own mDNS broadcasts
+    let my_name = display_name.to_string();
+
+    // Spawn a dedicated background thread to listen for peer announcements
+    thread::spawn(move || {
+        while let Ok(event) = browser.recv() {
+            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
+                // We don't want to discover ourselves!
+                if !info.get_fullname().contains(&my_name) {
+                    // Extract the first available IP address (usually IPv4)
+                    if let Some(ip) = info.get_addresses().iter().next() {
+                        // Print a nice notification directly above the prompt
+                        println!("\n\n[+] 📡 mDNS DISCOVERY: Found Peer!");
+                        println!("    -> Name: {}", info.get_fullname());
+                        println!("    -> IP Address: {}", ip);
+                        println!("    -> Try: /list {}", ip);
+                        
+                        // Reprint the CLI prompt so the UI stays clean
+                        print!("p2p-node> ");
+                        let _ = io::stdout().flush();
+                    }
+                }
+            }
+        }
+    });
+
     println!("[+] Node is fully initialized and online!\n");
 
     // 4. Multithreaded CLI Environment
