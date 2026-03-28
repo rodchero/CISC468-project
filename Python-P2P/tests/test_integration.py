@@ -6,10 +6,12 @@ from src.handshake import perform_handshake_initiator, perform_handshake_respond
 from src.file_manager import FileManager
 from src.trust import TrustStore
 from src.key_rotation import create_rotation_notice
+from src.crypto_utils import sha256
+from src.file_manager import verify_file_metadata
 from src.protocol import (
     request_file_list, handle_file_list_request,
     request_file, send_file, receive_file,
-    offer_file,
+    offer_file, resolve_owner_pubkey,
     send_app_message, recv_app_message,
     handle_key_rotation,
     FILE_LIST_REQUEST, FILE_RESPONSE, FILE_SEND_RESPONSE,
@@ -382,3 +384,65 @@ async def test_key_rotation_bad_signature():
     with pytest.raises(P2PError) as exc_info:
         await handle_key_rotation(None, store, notice)
     assert exc_info.value.error_code == KEY_ROTATION_INVALID
+
+
+# ---- Third-party file verification ----
+
+@pytest.mark.asyncio
+async def test_third_party_file_transfer(tmp_path):
+    """Alice creates a file. Bob downloads it. Charlie downloads from Bob
+    and verifies using Alice's original signature."""
+    alice, bob, srv, keep_alive = await _connect_peers()
+
+    alice_dir = str(tmp_path / "alice_files")
+    bob_dir = str(tmp_path / "bob_dl")
+    os.makedirs(alice_dir)
+    os.makedirs(bob_dir)
+
+    content = b"alice original content"
+    with open(os.path.join(alice_dir, "paper.txt"), "wb") as f:
+        f.write(content)
+
+    fm_alice = FileManager(alice_dir, alice["priv"], alice["pub"])
+    fm_alice.scan_files()
+    meta = fm_alice.get_file_list()[0]
+    file_id = meta.file_id
+
+    # Bob downloads from Alice
+    async def alice_sends():
+        msg_type, _ = await recv_app_message(alice["session"], alice["reader"])
+        resp = FileResponse()
+        resp.approved = True
+        await send_app_message(alice["session"], alice["writer"], FILE_RESPONSE, resp)
+        await send_file(alice["session"], alice["writer"], fm_alice, file_id)
+
+    task = asyncio.create_task(alice_sends())
+    approved = await request_file(bob["session"], bob["reader"], bob["writer"], file_id)
+    assert approved
+    filepath = await receive_file(
+        bob["session"], bob["reader"], meta, bob_dir, alice["pub_bytes"]
+    )
+    await task
+
+    # Bob stores the third-party metadata (preserves Alice's signature)
+    fm_bob = FileManager(bob_dir, bob["priv"], bob["pub"])
+    fm_bob.store_third_party_metadata(meta)
+    fm_bob.scan_files()
+
+    # Verify Bob's file list includes alice's file with alice's signature
+    bob_files = fm_bob.get_file_list()
+    found = [f for f in bob_files if f.filename == "paper.txt"]
+    assert len(found) == 1
+    assert found[0].owner_signature == meta.owner_signature
+    assert verify_file_metadata(found[0], alice["pub_bytes"])
+
+    # Now simulate Charlie verifying: resolve_owner_pubkey should find alice's key
+    trust = TrustStore()
+    trust.add_contact(alice["pub_bytes"], "alice", trusted=True)
+    trust.add_contact(bob["pub_bytes"], "bob", trusted=True)
+
+    owner_key = resolve_owner_pubkey(found[0], bob["pub_bytes"], trust)
+    assert owner_key == alice["pub_bytes"]
+    assert verify_file_metadata(found[0], owner_key)
+
+    await _close(alice, srv, keep_alive)

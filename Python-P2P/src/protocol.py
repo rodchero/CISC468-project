@@ -11,6 +11,7 @@ from src.errors import (
     P2PError, FILE_HASH_MISMATCH, INVALID_FILE_SIGNATURE,
     KEY_ROTATION_INVALID, INVALID_MESSAGE, TRANSFER_INTERRUPTED,
 )
+from src.crypto_utils import sha256
 from src.key_rotation import verify_rotation_notice
 
 # Message type strings — must match between Python and Rust
@@ -38,6 +39,15 @@ MSG_TYPE_MAP = {
     KEY_ROTATION_NOTICE: KeyRotationNotice,
     ERROR_MESSAGE: ErrorMessage,
 }
+
+
+def resolve_owner_pubkey(metadata, sender_pubkey_bytes, trust_store):
+    """Figure out which key to verify a file with. If the sender isn't the
+    owner (third-party file), look up the original owner in the trust store."""
+    sender_fp = sha256(sender_pubkey_bytes)
+    if metadata.owner_fingerprint == sender_fp:
+        return sender_pubkey_bytes
+    return trust_store.lookup_by_owner_fingerprint(metadata.owner_fingerprint)
 
 
 async def send_app_message(session, writer, msg_type, inner_msg):

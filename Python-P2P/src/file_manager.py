@@ -48,6 +48,7 @@ class FileManager:
         self.identity_pub = identity_public_key
         self.identity_pub_bytes = get_public_key_bytes(identity_public_key)
         self.files = {}  # file_id bytes -> (filepath, FileMetadata)
+        self.third_party = {}  # file_id bytes -> FileMetadata (original owner's)
 
     def create_file_metadata(self, filepath) -> FileMetadata:
         filename = os.path.basename(filepath)
@@ -74,11 +75,18 @@ class FileManager:
 
     def scan_files(self):
         self.files.clear()
+        # Restore third-party files first (preserve original owner's metadata)
+        for file_id, meta in self.third_party.items():
+            filepath = os.path.join(self.shared_dir, meta.filename)
+            if os.path.isfile(filepath):
+                self.files[file_id] = (filepath, meta)
+        # Scan our own files, skip anything already tracked as third-party
         for name in os.listdir(self.shared_dir):
             path = os.path.join(self.shared_dir, name)
             if os.path.isfile(path):
                 meta = self.create_file_metadata(path)
-                self.files[meta.file_id] = (path, meta)
+                if meta.file_id not in self.third_party:
+                    self.files[meta.file_id] = (path, meta)
 
     def get_file_list(self):
         return [meta for _, meta in self.files.values()]
@@ -88,9 +96,23 @@ class FileManager:
         return entry[0] if entry else None
 
     def store_third_party_metadata(self, metadata):
-        """Store metadata from another owner so we can serve their files too."""
+        """Store received file's metadata with original owner's signature for re-sharing."""
         file_id = metadata.file_id
-        # We might not have the file yet, so filepath can be None
-        existing = self.files.get(file_id)
-        filepath = existing[0] if existing else None
+        self.third_party[file_id] = metadata
+        filepath = os.path.join(self.shared_dir, metadata.filename)
         self.files[file_id] = (filepath, metadata)
+
+    def export_third_party(self):
+        """Serialize third-party metadata for encrypted storage."""
+        result = {}
+        for file_id, meta in self.third_party.items():
+            result[file_id.hex()] = meta.SerializeToString().hex()
+        return result
+
+    def import_third_party(self, data):
+        """Restore third-party metadata from storage."""
+        for file_id_hex, meta_hex in data.items():
+            file_id = bytes.fromhex(file_id_hex)
+            meta = FileMetadata()
+            meta.ParseFromString(bytes.fromhex(meta_hex))
+            self.third_party[file_id] = meta

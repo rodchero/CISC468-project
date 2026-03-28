@@ -106,14 +106,18 @@ class ConnectionManager:
                     answer = input(
                         f"Peer wants to send you '{meta.filename}' ({meta.file_size} bytes). Accept? [y/n]: "
                     ).strip().lower()
-                    from src.protocol import send_app_message, FILE_SEND_RESPONSE, receive_file
+                    from src.protocol import send_app_message, FILE_SEND_RESPONSE, receive_file, resolve_owner_pubkey
                     from src.generated.p2pfileshare_pb2 import FileSendResponse
                     resp = FileSendResponse()
                     if answer == "y":
                         resp.accepted = True
                         await send_app_message(session, writer, FILE_SEND_RESPONSE, resp)
                         output_dir = self.file_manager.shared_dir
-                        await receive_file(session, reader, meta, output_dir, session.peer_identity_pubkey)
+                        owner_key = resolve_owner_pubkey(meta, session.peer_identity_pubkey, self.trust_store)
+                        if owner_key is None:
+                            owner_key = session.peer_identity_pubkey
+                        await receive_file(session, reader, meta, output_dir, owner_key)
+                        self.file_manager.store_third_party_metadata(meta)
                         print(f"Received file: {meta.filename}")
                     else:
                         resp.accepted = False

@@ -47,6 +47,14 @@ class TrustStore:
                 return True
         return False
 
+    def lookup_by_owner_fingerprint(self, owner_fp_bytes):
+        """Look up a contact's public key by raw SHA-256 fingerprint bytes."""
+        fp_str = ':'.join(f'{b:02x}' for b in owner_fp_bytes)
+        entry = self.contacts.get(fp_str)
+        if entry:
+            return bytes.fromhex(entry["pubkey"])
+        return None
+
     def to_dict(self) -> dict:
         return {"contacts": self.contacts}
 

@@ -11,7 +11,7 @@ from src.discovery import PeerDiscovery
 from src.transport import ConnectionManager
 from src.protocol import (
     request_file_list, request_file, send_file,
-    offer_file, send_key_rotation,
+    offer_file, send_key_rotation, receive_file, resolve_owner_pubkey,
 )
 from src.key_rotation import create_rotation_notice
 
@@ -52,6 +52,12 @@ async def main():
     # Set up shared files directory
     os.makedirs(SHARED_DIR, exist_ok=True)
     file_mgr = FileManager(SHARED_DIR, priv, pub)
+
+    # Load cached third-party metadata before scanning
+    cache = storage.load_metadata_cache()
+    if cache:
+        file_mgr.import_third_party(cache)
+
     file_mgr.scan_files()
     print(f"Sharing {len(file_mgr.get_file_list())} files from {SHARED_DIR}")
 
@@ -142,11 +148,15 @@ async def main():
 
                 approved = await request_file(current_session, current_reader, current_writer, meta.file_id)
                 if approved:
-                    from src.protocol import receive_file
-                    filepath = await receive_file(
-                        current_session, current_reader, meta, SHARED_DIR,
-                        current_session.peer_identity_pubkey
+                    owner_key = resolve_owner_pubkey(
+                        meta, current_session.peer_identity_pubkey, trust_store
                     )
+                    if owner_key is None:
+                        owner_key = current_session.peer_identity_pubkey
+                    filepath = await receive_file(
+                        current_session, current_reader, meta, SHARED_DIR, owner_key
+                    )
+                    file_mgr.store_third_party_metadata(meta)
                     print(f"File saved: {filepath}")
 
             elif choice == "5":
@@ -210,6 +220,7 @@ async def main():
     finally:
         print("\nShutting down...")
         storage.save_trust_store(trust_store)
+        storage.save_metadata_cache(file_mgr.export_third_party())
         discovery.stop()
         conn_mgr.stop()
         print("Goodbye.")
