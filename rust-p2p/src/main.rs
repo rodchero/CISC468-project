@@ -26,7 +26,7 @@ fn main() -> Result<(), P2pError> {
     println!(" CISC 468 P2P Secure File Sharing Client  ");
     println!("==========================================");
 
-    let display_name = "RustNode_Roman";
+    let display_name = "Bob";
     let storage_dir = "./roman_p2p_vault";
     let salt = b"cisc468_static_salt_1234"; 
     let port = 9468; 
@@ -182,7 +182,9 @@ fn main() -> Result<(), P2pError> {
                                 let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                                 let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::None);
                             }
-                            Err(_) => {}
+                            Err(e) => {
+                                println!("[-] Inbound handshake failed from {}: {:?}", peer_addr, e);
+                            }
                         }
                     });
                 }
@@ -255,19 +257,29 @@ fn main() -> Result<(), P2pError> {
                                     }
                                     let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                                     let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFileList);
+                                } else {
+                                    println!("[-] Handshake failed with {}. Is the peer online and running the same protocol version?", target);
                                 }
+                            } else {
+                                println!("[-] Failed to connect to {}. Is the IP correct and is the peer online?", target);
                             }
                         });
                     } else { println!("Usage: /list <ip_address>"); }
                 }
                 "/request" => {
                     if let (Some(ip), Some(hex_id)) = (args.next(), args.next()) {
-                        if let Ok(file_id) = hex::decode(hex_id) {
-                            // Pad to 32 bytes just in case they typed the short ID
-                            let mut full_id = vec![0u8; 32];
-                            let copy_len = std::cmp::min(file_id.len(), 32);
-                            full_id[..copy_len].copy_from_slice(&file_id[..copy_len]);
+                        
+                        // FIX: Look up the full file ID in the local metadata cache using the prefix
+                        let full_id = {
+                            let state = node_state.lock().unwrap();
+                            state.metadata_cache.keys().find(|id| {
+                                // Prevent panics if an ID is less than 4 bytes long
+                                let prefix_len = std::cmp::min(4, id.len());
+                                hex::encode(&id[..prefix_len]) == hex_id
+                            }).cloned() // Clone the Vec<u8> to escape the mutex lock
+                        };
 
+                        if let Some(full_id) = full_id {
                             let target = format!("{}:{}", ip, port);
                             let peer_ip = ip.to_string();
 
@@ -282,11 +294,14 @@ fn main() -> Result<(), P2pError> {
                                             if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
                                         }
                                         let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                        let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub,  SessionAction::RequestFile(full_id));
+                                        // Pass the actual full_id, not the zero-padded one
+                                        let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFile(full_id));
                                     }
                                 }
                             });
-                        } else { println!("[-] Invalid hex ID"); }
+                        } else {
+                            println!("[-] Unknown short ID '{}'. Did you run '/list {}' first to cache the file?", hex_id, ip);
+                        }
                     } else { println!("Usage: /request <ip_address> <hex_id>"); }
                 }
                 _ => println!("Unknown command. Type /help."),
