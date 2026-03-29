@@ -17,6 +17,7 @@ class ConnectionManager:
         self.trust_store = trust_store
         self.file_manager = file_manager
         self.active_sessions = {}  # peer_display_name -> (session, reader, writer)
+        self.pending_consents = asyncio.Queue()
         self.server = None
 
     async def start_server(self, port=9468):
@@ -52,8 +53,6 @@ class ConnectionManager:
             )
             print(f"Connected to {session.peer_display_name}")
             self.active_sessions[session.peer_display_name] = (session, reader, writer)
-            # Start message loop in background
-            asyncio.create_task(self._message_loop(session, reader, writer))
             return session
         except P2PError as e:
             print(f"Handshake failed: {e}")
@@ -70,8 +69,6 @@ class ConnectionManager:
                     await handle_file_list_request(session, reader, writer, file_list)
 
                 elif msg_type == FILE_REQUEST:
-                    # Re-parse since handle_file_request expects to recv itself
-                    # TODO: refactor to avoid double-recv
                     from src.generated.p2pfileshare_pb2 import FileRequest, FileResponse
                     req = FileRequest()
                     req.ParseFromString(plaintext)
@@ -86,8 +83,15 @@ class ConnectionManager:
                         await send_app_message(session, writer, FILE_RESPONSE, resp)
                     else:
                         _, meta = self.file_manager.files[file_id]
-                        answer = input(f"Peer wants to download '{meta.filename}'. Allow? [y/n]: ").strip().lower()
-                        if answer == "y":
+                        # Queue consent request — menu loop will prompt the user
+                        future = asyncio.get_event_loop().create_future()
+                        await self.pending_consents.put({
+                            "prompt": f"Peer wants to download '{meta.filename}'. Allow? [y/n]: ",
+                            "future": future,
+                        })
+                        print(f"\n[!] Incoming file request for '{meta.filename}' — answer at next menu prompt")
+                        approved = await future
+                        if approved:
                             resp.approved = True
                             from src.protocol import send_app_message, FILE_RESPONSE
                             await send_app_message(session, writer, FILE_RESPONSE, resp)
@@ -103,13 +107,18 @@ class ConnectionManager:
                     offer = FileSendOffer()
                     offer.ParseFromString(plaintext)
                     meta = offer.metadata
-                    answer = input(
-                        f"Peer wants to send you '{meta.filename}' ({meta.file_size} bytes). Accept? [y/n]: "
-                    ).strip().lower()
+                    # Queue consent request — menu loop will prompt the user
+                    future = asyncio.get_event_loop().create_future()
+                    await self.pending_consents.put({
+                        "prompt": f"Peer wants to send you '{meta.filename}' ({meta.file_size} bytes). Accept? [y/n]: ",
+                        "future": future,
+                    })
+                    print(f"\n[!] Incoming file offer '{meta.filename}' — answer at next menu prompt")
+                    accepted = await future
                     from src.protocol import send_app_message, FILE_SEND_RESPONSE, receive_file, resolve_owner_pubkey
                     from src.generated.p2pfileshare_pb2 import FileSendResponse
                     resp = FileSendResponse()
-                    if answer == "y":
+                    if accepted:
                         resp.accepted = True
                         await send_app_message(session, writer, FILE_SEND_RESPONSE, resp)
                         output_dir = self.file_manager.shared_dir

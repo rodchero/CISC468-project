@@ -1,4 +1,4 @@
-import time
+import asyncio
 import socket
 import pytest
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
@@ -9,13 +9,14 @@ from src.discovery import PeerDiscovery, SERVICE_TYPE
 # The sleeps below give zeroconf time to discover services on the local network.
 
 
-def test_discover_peer():
+@pytest.mark.asyncio
+async def test_discover_peer():
     """Register a service with PeerDiscovery, use a second zeroconf to check it shows up."""
     disc = PeerDiscovery()
-    disc.start("test-peer", port=19468)
+    await disc.start("test-peer", port=19468)
 
     # Give it a moment to register
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     # Second zeroconf instance to verify the service is visible
     zc2 = Zeroconf()
@@ -27,9 +28,9 @@ def test_discover_peer():
             found.append(info)
 
     browser = ServiceBrowser(zc2, SERVICE_TYPE, handlers=[handler])
-    time.sleep(2)
+    await asyncio.sleep(2)
 
-    disc.stop()
+    await disc.stop()
     zc2.close()
 
     # Check that at least one service was found with our port
@@ -39,15 +40,17 @@ def test_discover_peer():
     assert props[b"display_name"] == b"test-peer"
 
 
-def test_stop_no_crash():
+@pytest.mark.asyncio
+async def test_stop_no_crash():
     """start() then stop() should not raise."""
     disc = PeerDiscovery()
-    disc.start("cleanup-test", port=19469)
-    time.sleep(0.5)
-    disc.stop()  # should not crash
+    await disc.start("cleanup-test", port=19469)
+    await asyncio.sleep(0.5)
+    await disc.stop()  # should not crash
 
 
-def test_stop_without_start():
+@pytest.mark.asyncio
+async def test_stop_without_start():
     """stop() without start() should not crash either."""
     disc = PeerDiscovery()
-    disc.stop()
+    await disc.stop()

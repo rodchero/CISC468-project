@@ -1,3 +1,14 @@
-rust-p2p/target
-rust-p2p/target/*
+### Rust ###
+rust-p2p/target/
 rust-p2p/roman_p2p_vault/
+
+### Python ###
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Runtime storage and shared files (generated per-port)
+Python-P2P/.p2p_storage_*/
+Python-P2P/shared_files_*/

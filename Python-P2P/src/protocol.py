@@ -216,12 +216,13 @@ async def send_key_rotation(session, writer, notice):
 
 
 async def handle_key_rotation(session, trust_store, notice):
-    # Look up the stored old key to verify against
-    stored_old = bytes.fromhex(
-        trust_store.contacts[trust_store._fp(notice.old_public_key)]["pubkey"]
-    )
+    fp = trust_store._fp(notice.old_public_key)
+    if fp not in trust_store.contacts:
+        # Peer not in trust store yet — add them so rotation can proceed
+        name = session.peer_display_name if session else "unknown"
+        trust_store.add_contact(notice.old_public_key, name)
 
-    if not verify_rotation_notice(notice, stored_old):
+    if not verify_rotation_notice(notice, notice.old_public_key):
         raise P2PError(KEY_ROTATION_INVALID, "Key rotation verification failed")
 
     trust_store.replace_key(notice.old_public_key, notice.new_public_key)

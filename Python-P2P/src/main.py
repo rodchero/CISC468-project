@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 from src.storage import SecureStorage
 from src.crypto_utils import (
     generate_identity_keypair, get_public_key_bytes,
@@ -16,15 +17,19 @@ from src.protocol import (
 from src.key_rotation import create_rotation_notice
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STORAGE_DIR = os.path.join(BASE_DIR, ".p2p_storage")
-SHARED_DIR = os.path.join(BASE_DIR, "shared_files")
 
 
 async def main():
     print("=== P2P Secure File Sharing ===\n")
 
+    # Setup prompts (before server starts, regular input is fine)
     display_name = input("Enter display name: ").strip()
     password = input("Enter password: ").strip()
+    port = int(input("Port [9468]: ").strip() or "9468")
+
+    # Each instance gets its own storage and shared directory
+    STORAGE_DIR = os.path.join(BASE_DIR, f".p2p_storage_{port}")
+    SHARED_DIR = os.path.join(BASE_DIR, f"shared_files_{port}")
 
     # Init storage
     storage = SecureStorage(STORAGE_DIR)
@@ -63,12 +68,32 @@ async def main():
 
     # Start mDNS discovery
     discovery = PeerDiscovery()
-    discovery.start(display_name)
+    await discovery.start(display_name, port)
     print("mDNS discovery started.")
 
     # Start TCP server
     conn_mgr = ConnectionManager(priv, pub, display_name, trust_store, file_mgr)
-    await conn_mgr.start_server()
+    await conn_mgr.start_server(port)
+
+    # Background stdin reader — single thread reads all input
+    input_queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def _stdin_reader():
+        while True:
+            try:
+                line = input()
+                loop.call_soon_threadsafe(input_queue.put_nowait, line)
+            except EOFError:
+                break
+
+    threading.Thread(target=_stdin_reader, daemon=True).start()
+
+    async def get_input(prompt=""):
+        """Print prompt and wait for next line from stdin."""
+        if prompt:
+            print(prompt, end="", flush=True)
+        return await input_queue.get()
 
     # Track current connection for menu commands
     current_peer = None
@@ -88,9 +113,31 @@ async def main():
             print("7. View trusted contacts")
             print("8. Rescan shared files")
             print("9. Exit")
+            print("\n> ", end="", flush=True)
 
-            # TODO: make this non-blocking so we can handle incoming connections
-            choice = input("\n> ").strip()
+            # Race: wait for user input OR a consent request from a peer
+            input_task = asyncio.create_task(input_queue.get())
+            consent_task = asyncio.create_task(conn_mgr.pending_consents.get())
+
+            done, pending = await asyncio.wait(
+                {input_task, consent_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for t in pending:
+                t.cancel()
+
+            # If a consent request arrived, handle it immediately
+            if consent_task in done:
+                req = consent_task.result()
+                # If user also typed something, put it back for next loop
+                if input_task in done:
+                    input_queue.put_nowait(input_task.result())
+                answer = await get_input(f"\n{req['prompt']}")
+                req["future"].set_result(answer.strip().lower() == "y")
+                continue
+
+            choice = input_task.result().strip()
 
             if choice == "1":
                 peers = discovery.get_peers()
@@ -103,12 +150,12 @@ async def main():
             elif choice == "2":
                 peers = discovery.get_peers()
                 if not peers:
-                    ip = input("No mDNS peers. Enter IP manually: ").strip()
-                    port = int(input("Port [9468]: ").strip() or "9468")
+                    ip = (await get_input("No mDNS peers. Enter IP manually: ")).strip()
+                    port = int((await get_input("Port [9468]: ")).strip() or "9468")
                 else:
                     for i, p in enumerate(peers):
                         print(f"  {i+1}. {p['name']} ({p['ip']}:{p['port']})")
-                    idx = int(input("Select peer: ").strip()) - 1
+                    idx = int((await get_input("Select peer: ")).strip()) - 1
                     ip = peers[idx]["ip"]
                     port = peers[idx]["port"]
 
@@ -143,7 +190,7 @@ async def main():
                     continue
                 for i, f in enumerate(files):
                     print(f"  {i+1}. {f.filename} ({f.file_size} bytes)")
-                idx = int(input("Select file: ").strip()) - 1
+                idx = int((await get_input("Select file: ")).strip()) - 1
                 meta = files[idx]
 
                 approved = await request_file(current_session, current_reader, current_writer, meta.file_id)
@@ -170,7 +217,7 @@ async def main():
                     continue
                 for i, f in enumerate(our_files):
                     print(f"  {i+1}. {f.filename} ({f.file_size} bytes)")
-                idx = int(input("Select file: ").strip()) - 1
+                idx = int((await get_input("Select file: ")).strip()) - 1
                 meta = our_files[idx]
 
                 accepted = await offer_file(current_session, current_reader, current_writer, meta)
@@ -183,9 +230,12 @@ async def main():
                 notice = create_rotation_notice(priv, pub, new_priv, new_pub)
 
                 # Notify all connected peers
-                for name, (sess, _, wrt) in conn_mgr.active_sessions.items():
-                    await send_key_rotation(sess, wrt, notice)
-                    print(f"Notified {name} of key rotation.")
+                for name, (sess, _, wrt) in list(conn_mgr.active_sessions.items()):
+                    try:
+                        await send_key_rotation(sess, wrt, notice)
+                        print(f"Notified {name} of key rotation.")
+                    except (ConnectionError, OSError):
+                        print(f"Could not notify {name} (disconnected).")
 
                 # Update local state
                 priv, pub = new_priv, new_pub
@@ -221,7 +271,7 @@ async def main():
         print("\nShutting down...")
         storage.save_trust_store(trust_store)
         storage.save_metadata_cache(file_mgr.export_third_party())
-        discovery.stop()
+        await discovery.stop()
         conn_mgr.stop()
         print("Goodbye.")
 
