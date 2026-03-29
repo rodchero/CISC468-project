@@ -9,6 +9,10 @@ use aes_gcm::{
 };
 use rand_core::RngCore;
 
+use crate::protocol::messages::{FileListResponse, FileMetadata};
+use prost::Message;
+use std::collections::HashMap;
+
 use crate::crypto::AesKeyBytes;
 use crate::error::P2pError;
 
@@ -95,6 +99,32 @@ impl SecureStorage {
                 .map_err(|e| P2pError::IoError(format!("Failed to delete file: {}", e)))?;
         }
         Ok(())
+    }
+
+    /// Saves the third-party metadata cache using Protobuf serialization inside the vault.
+    pub fn write_third_party_metadata(&self, metadata_map: &HashMap<Vec<u8>, FileMetadata>) -> Result<(), P2pError> {
+        let files: Vec<FileMetadata> = metadata_map.values().cloned().collect();
+        let msg = FileListResponse { files };
+        
+        let mut buf = Vec::new();
+        msg.encode(&mut buf).unwrap();
+        self.write_file("third_party_metadata.bin", &buf)
+    }
+
+    /// Loads the third-party metadata cache from the secure vault.
+    pub fn read_third_party_metadata(&self) -> Result<HashMap<Vec<u8>, FileMetadata>, P2pError> {
+        let bytes = match self.read_file("third_party_metadata.bin") {
+            Ok(b) => b,
+            Err(P2pError::FileNotFound) => return Ok(HashMap::new()), // Normal on first startup
+            Err(e) => return Err(e),
+        };
+        
+        let msg = FileListResponse::decode(bytes.as_slice()).map_err(|_| P2pError::InvalidMessage)?;
+        let mut map = HashMap::new();
+        for file in msg.files {
+            map.insert(file.file_id.clone(), file);
+        }
+        Ok(map)
     }
 }
 

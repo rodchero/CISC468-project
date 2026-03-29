@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use prost::Message;
+use sha2::{Sha256, Digest};
 
 use crate::error::P2pError;
 use crate::protocol::session::SecureSession;
@@ -28,6 +29,8 @@ pub struct NodeState {
     pub metadata_cache: HashMap<Vec<u8>, FileMetadata>,
     // Buffer to hold incoming chunks until FileTransferComplete is received
     pub incoming_transfers: HashMap<Vec<u8>, Vec<u8>>,
+    // Third party metadata
+    pub third_party_metadata: HashMap<Vec<u8>, FileMetadata>,
 }
 
 /// Defines an action a session should take immediately upon connecting
@@ -65,6 +68,7 @@ impl<'a> P2pApp<'a> {
         &self, 
         mut session: SecureSession<S>, 
         peer_ip: &str,
+        peer_pub_key: &[u8; 32],
         initial_action: SessionAction
     ) -> Result<(), P2pError> {
         
@@ -112,7 +116,7 @@ impl<'a> P2pApp<'a> {
                 "KeyRotationNotice" => self.handle_key_rotation_notice(peer_ip, &payload)?,
                 "FileResponse" => println!("\n[+] Received FileResponse. Transfer status updated."),
                 "FileChunk" => self.handle_file_chunk(&payload)?,
-                "FileTransferComplete" => self.handle_file_transfer_complete(&payload)?, 
+                "FileTransferComplete" => self.handle_file_transfer_complete(&payload, &peer_pub_key)?, 
                 "ErrorMessage" => self.handle_error_message(&payload)?,
                 _ => {
                     println!("\n[-] Unhandled message type: {}", msg_type);
@@ -133,7 +137,15 @@ impl<'a> P2pApp<'a> {
         println!("\n[*] Peer {} requested file list.", peer_ip);
         
         let state = self.state.lock().unwrap();
-        let files: Vec<FileMetadata> = state.metadata_cache.values().cloned().collect();
+
+        let mut files: Vec<FileMetadata> = state.metadata_cache.values().cloned().collect();
+        // add third-party files
+        for tp_meta in state.third_party_metadata.values() {
+            // Only add if not somehow already in our local cache
+            if !files.iter().any(|f| f.file_id == tp_meta.file_id) {
+                files.push(tp_meta.clone());
+            }
+        }
 
         let response = FileListResponse { files };
         let mut buf = Vec::new();
@@ -316,46 +328,77 @@ impl<'a> P2pApp<'a> {
     }
 
     /// Triggers when all chunks arrive. Reassembles the file, verifies cryptography, and saves to vault.
-    /// Fulfills Assignment Requirement 5 (Third-Party Integrity & Verification).
-    fn handle_file_transfer_complete(&self, payload: &[u8]) -> Result<(), P2pError> {
+    fn handle_file_transfer_complete(&self, payload: &[u8], peer_pub_key: &[u8; 32]) -> Result<(), P2pError> {
         let comp = FileTransferComplete::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
         
         let mut state = self.state.lock().unwrap();
         let received_data = state.incoming_transfers.remove(&comp.file_id).ok_or(P2pError::InvalidMessage)?;
         let metadata = state.metadata_cache.get(&comp.file_id).cloned().ok_or(P2pError::InvalidMessage)?;
         
-        // Drop lock before doing expensive cryptography
-        drop(state);
+        drop(state); // Drop lock before expensive crypto
 
         println!("\n[*] All chunks received for '{}'. Verifying integrity and signatures...", metadata.filename);
 
-        // 1. Verify SHA-256 Hash
-        use sha2::{Sha256, Digest};
+        // Verify SHA-256 Hash
         let mut hasher = Sha256::new();
         hasher.update(&received_data);
-        let computed_hash = hasher.finalize();
-        
-        if computed_hash.as_slice() != metadata.file_hash {
-            println!("[-] SECURITY ALERT: File hash mismatch for '{}'! File dropped.", metadata.filename);
+        if hasher.finalize().as_slice() != metadata.file_hash {
             return Err(P2pError::FileHashMismatch);
         }
 
-        // 2. Verify Original Owner's Ed25519 Signature
-        let owner_pub: [u8; 32] = metadata.owner_fingerprint.clone().try_into().map_err(|_| P2pError::InvalidMessage)?;
+        // --- NEW: Dynamic Public Key Resolution ---
+        let ts = self.trust_store.lock().unwrap();
+        let owner_pub_vec = Self::resolve_owner_pubkey(&metadata, peer_pub_key, &ts)
+            .ok_or_else(|| {
+                println!("[-] SECURITY ALERT: Unknown owner fingerprint. Cannot verify third-party file!");
+                P2pError::UntrustedKey
+            })?;
+        
+        let owner_pub: [u8; 32] = owner_pub_vec.try_into().map_err(|_| P2pError::InvalidMessage)?;
+        
         if let Err(e) = crate::protocol::verification::verify_metadata(&metadata, &owner_pub) {
              println!("[-] SECURITY ALERT: Invalid owner signature on file '{}'! File dropped.", metadata.filename);
              return Err(e);
         }
+        drop(ts);
+        // ------------------------------------------
 
-        // 3. Save to Secure Encrypted Storage
         self.storage.write_file(&metadata.filename, &received_data)?;
         println!("[+] Verification passed! File '{}' securely saved to vault.", metadata.filename);
 
-        // 4. Register the file so we can now seed/share it with others!
         let mut state = self.state.lock().unwrap();
         state.file_registry.insert(comp.file_id.clone(), metadata.filename.clone());
         
+        // --- NEW: Persist original metadata in third_party cache ---
+        state.third_party_metadata.insert(comp.file_id.clone(), metadata.clone());
+        
+        let map_to_save = state.third_party_metadata.clone();
+        drop(state);
+
+        if let Err(e) = self.storage.write_third_party_metadata(&map_to_save) {
+            println!("[-] Failed to save third-party metadata: {}", e);
+        }
+        
         Ok(())
     }
+
+
+    pub fn resolve_owner_pubkey(
+        metadata: &FileMetadata,
+        sender_pubkey: &[u8; 32],
+        trust_store: &TrustStore<'_>
+    ) -> Option<Vec<u8>> {
+        let mut hasher = Sha256::new();
+        hasher.update(sender_pubkey);
+        let sender_fingerprint = hasher.finalize().to_vec();
+
+        if metadata.owner_fingerprint == sender_fingerprint || metadata.owner_fingerprint == sender_pubkey {
+            return Some(sender_pubkey.to_vec()); // Sender IS the original owner
+        }
+
+        // Sender is sharing someone else's file, check the Trust Store
+        trust_store.get_pubkey_by_fingerprint(&metadata.owner_fingerprint)
+    }
+    
 }
 

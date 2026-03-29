@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-
+use sha2::{Sha256, Digest};
 use crate::storage::SecureStorage;
 use crate::error::P2pError;
 
@@ -61,6 +61,22 @@ impl<'a> TrustStore<'a> {
     pub fn update_peer_key(&mut self, identifier: &str, new_pub_key: &[u8; 32]) -> Result<(), P2pError> {
         self.db.known_peers.insert(identifier.to_string(), new_pub_key.to_vec());
         self.save()
+    }
+
+    /// Look up a public key by checking if its SHA-256 hash matches the fingerprint,
+    /// or if the key itself perfectly matches the fingerprint.
+    pub fn get_pubkey_by_fingerprint(&self, fingerprint: &[u8]) -> Option<Vec<u8>> {
+        for key in self.db.known_peers.values() {
+            let mut hasher = Sha256::new();
+            hasher.update(key);
+            let key_fp = hasher.finalize().to_vec();
+            
+            // Support both hashed fingerprints and raw pubkey fingerprints
+            if key_fp == fingerprint || key == fingerprint { 
+                return Some(key.clone());
+            }
+        }
+        None
     }
 }
 

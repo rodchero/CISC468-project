@@ -69,6 +69,16 @@ fn main() -> Result<(), P2pError> {
     let trust_store = Arc::new(Mutex::new(TrustStore::new(&storage)?));
     let node_state = Arc::new(Mutex::new(NodeState::default()));
     
+    // Load third-party cache on startup
+    if let Ok(tp_meta) = storage.read_third_party_metadata() {
+        println!("[+] Loaded {} third-party files from secure storage.", tp_meta.len());
+        let mut state = node_state.lock().unwrap();
+        for (id, meta) in tp_meta {
+            state.file_registry.insert(id.clone(), meta.filename.clone());
+            state.third_party_metadata.insert(id, meta);
+        }
+    }
+
     // --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
     let dummy_id = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
     let dummy_metadata = FileMetadata {
@@ -170,7 +180,7 @@ fn main() -> Result<(), P2pError> {
                                     }
                                 }
                                 let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::None);
+                                let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::None);
                             }
                             Err(_) => {}
                         }
@@ -244,7 +254,7 @@ fn main() -> Result<(), P2pError> {
                                         if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
                                     }
                                     let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                    let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::RequestFileList);
+                                    let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFileList);
                                 }
                             }
                         });
@@ -272,7 +282,7 @@ fn main() -> Result<(), P2pError> {
                                             if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
                                         }
                                         let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                        let _ = app_ref.run_peer_session(session, &peer_ip, SessionAction::RequestFile(full_id));
+                                        let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub,  SessionAction::RequestFile(full_id));
                                     }
                                 }
                             });
