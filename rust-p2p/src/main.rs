@@ -150,7 +150,7 @@ fn main() -> Result<(), P2pError> {
                         let ips: Vec<String> = info.get_addresses().iter().map(|ip| ip.to_string()).collect();
                         
                         if ips.is_empty() {
-                            println!("\n[-] mDNS ERROR: Resolved '{}' but couldn't extract an IP address!", info.get_fullname());
+                            println!("\n<< mDNS ERROR: Resolved '{}' but couldn't extract an IP address!", info.get_fullname());
                         } else {
                             println!("\n\n<< 📡 mDNS DISCOVERY: Found Peer!");
                             

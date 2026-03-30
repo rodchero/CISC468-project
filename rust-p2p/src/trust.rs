@@ -40,16 +40,16 @@ impl<'a> TrustStore<'a> {
         match self.db.known_peers.get(identifier) {
             Some(known_key) => {
                 if known_key == peer_pub_key {
-                    println!("[+] TOFU: Peer '{}' verified successfully against local database.", identifier);
+                    println!("<< Peer '{}' verified successfully against local database.", identifier);
                     Ok(())
                 } else {
-                    println!("[-] SECURITY ALERT: Key mismatch for peer '{}'!", identifier);
-                    println!("[-] This could be a Man-in-the-Middle attack or the peer rotated their keys.");
+                    println!("<< SECURITY ALERT: Key mismatch for peer '{}'!", identifier);
+                    println!("<< This could be a Man-in-the-Middle attack or the peer rotated their keys.");
                     Err(P2pError::UntrustedKey)
                 }
             }
             None => {
-                println!("[*] TOFU: First time connecting to '{}'. Saving public key to trust store...", identifier);
+                println!("<< TOFU: First time connecting to '{}'. Saving public key to trust store...", identifier);
                 self.db.known_peers.insert(identifier.to_string(), peer_pub_key.to_vec());
                 self.save()?;
                 Ok(())
