@@ -13,7 +13,9 @@ use std::thread;
 
 use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
+use sha2::{Sha256, Digest};
 
+use crate::protocol::verification::sign_metadata;
 use crate::error::P2pError;
 use crate::storage::SecureStorage;
 use crate::app::{P2pApp, NodeState, SessionAction};
@@ -79,24 +81,44 @@ fn main() -> Result<(), P2pError> {
         }
     }
 
-    // --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
-    let dummy_id = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-    let dummy_metadata = FileMetadata {
-        owner_fingerprint: my_id_secret.verifying_key().to_bytes().to_vec(),
-        file_id: dummy_id.clone(),
-        filename: "test_image.png".to_string(),
-        file_size: 1048576,
-        file_hash: vec![0xAA; 32],
-        timestamp: 1678886400,
-        owner_signature: vec![], // In reality, you'd sign this here
+// --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
+    let test_file_bytes = vec![0x00; 1024]; // 1KB of zeros
+    let file_hash = Sha256::digest(&test_file_bytes).to_vec();
+    let filename = "test_image.png".to_string();
+    let file_size = test_file_bytes.len() as u64;
+
+    // owner_fingerprint must be SHA-256(public_key), not raw public key
+    let owner_fp = Sha256::digest(my_id_secret.verifying_key().as_bytes()).to_vec();
+
+    // file_id = SHA-256(filename | file_hash | file_size_BE)
+    let file_id = {
+        let mut hasher = Sha256::new();
+        hasher.update(filename.as_bytes());
+        hasher.update(&file_hash);
+        hasher.update(&file_size.to_be_bytes());
+        hasher.finalize().to_vec()
     };
+
+    let mut dummy_metadata = FileMetadata {
+        owner_fingerprint: owner_fp,
+        file_id: file_id.clone(),
+        filename: filename.clone(),
+        file_size,
+        file_hash,
+        timestamp: 1678886400,
+        owner_signature: vec![],
+    };
+
+    // Actually sign the canonical bytes!
+    sign_metadata(&my_id_secret, &mut dummy_metadata).unwrap();
+
     {
         let mut state = node_state.lock().unwrap();
-        state.file_registry.insert(dummy_id.clone(), "test_image.png".to_string());
-        state.metadata_cache.insert(dummy_id, dummy_metadata);
+        state.file_registry.insert(file_id.clone(), filename.clone());
+        state.metadata_cache.insert(file_id.clone(), dummy_metadata);
         
         // Write the actual bytes to disk so the SecureStorage can stream it if requested
-        let _ = storage.write_file("test_image.png", &[0x00; 1024]);
+        let _ = storage.write_file(&filename, &test_file_bytes);
     }
     // -----------------------------------------------------------------------------------------
 
