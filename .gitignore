@@ -12,3 +12,5 @@ __pycache__/
 # Runtime storage and shared files (generated per-port)
 Python-P2P/.p2p_storage_*/
 Python-P2P/shared_files_*/
+
+Python-P2P/venv/
