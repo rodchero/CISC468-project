@@ -107,26 +107,22 @@ fn main() -> Result<(), P2pError> {
     let discovery = Discovery::new()?;
     discovery.start_advertising(display_name, port)?;
     
-    // Keep the receiver instead of throwing it away
     let browser = discovery.start_browsing()?;
-    
-    // Clone the display name so we can filter out our own mDNS broadcasts
     let my_name = display_name.to_string();
 
     // Spawn a dedicated background thread to listen for peer announcements
     thread::spawn(move || {
-        // This loop blocks and waits for mDNS events
         while let Ok(event) = browser.recv() {
             match event {
-                // PHASE 1: A peer broadcasted their presence, but we don't know their IP yet
+                // PHASE 1: A peer broadcasted their presence
                 mdns_sd::ServiceEvent::ServiceFound(_service_type, fullname) => {
                     if !fullname.contains(&my_name) {
-                        println!("\n<< mDNS: Heard broadcast from '{}'. Resolving IP address...", fullname);
+                        println!("\n<< mDNS: Heard broadcast from '{}'. Automatically resolving...", fullname);
                         print!("p2p-node> ");
                         let _ = io::stdout().flush();
                     }
                 }
-                // PHASE 2: We successfully mapped their broadcast to a physical IP address
+                // PHASE 2: The daemon successfully fetched the IP address in the background
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
                     if !info.get_fullname().contains(&my_name) {
                         let ips: Vec<String> = info.get_addresses().iter().map(|ip| ip.to_string()).collect();
@@ -135,7 +131,14 @@ fn main() -> Result<(), P2pError> {
                             println!("\n[-] mDNS ERROR: Resolved '{}' but couldn't extract an IP address!", info.get_fullname());
                         } else {
                             println!("\n\n<< 📡 mDNS DISCOVERY: Found Peer!");
-                            println!("    -> Name: {}", info.get_fullname());
+                            
+                            // Check TXT records for friendly display name (Python interop)
+                            let mut disp_name = info.get_fullname().to_string();
+                            if let Some(prop) = info.get_property("display_name") {
+                                disp_name = prop.val_str().to_string(); 
+                            }
+                            
+                            println!("    -> Name: {}", disp_name);
                             println!("    -> IP Addresses: {:?}", ips);
                             println!("    -> Try: /list {}", ips[0]);
                         }
@@ -143,7 +146,6 @@ fn main() -> Result<(), P2pError> {
                         let _ = io::stdout().flush();
                     }
                 }
-                // Ignore ServiceRemoved and other background noise
                 _ => {} 
             }
         }

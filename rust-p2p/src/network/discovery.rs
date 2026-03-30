@@ -2,6 +2,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::time::Duration;
 use crate::error::P2pError;
 
+#[derive(Clone)]
 pub struct Discovery {
     daemon: ServiceDaemon,
 }
@@ -23,7 +24,7 @@ impl Discovery {
         let service_type = "_p2pfileshare._tcp.local.";
         // mdns-sd 0.18 strictly requires hostnames to end with .local.
         let host_name = format!("{}.local.", instance_name); 
-        let properties = [("version", "1.0")];
+        let properties = [("version", "1.0"), ("display_name", instance_name)];
         
         // Use `()` instead of `""` to represent "No IP" in 0.18's AsIpAddrs trait
         let service_info = ServiceInfo::new(
@@ -46,6 +47,7 @@ impl Discovery {
         println!("Browsing for peers on {}...", service_type);
         self.daemon.browse(service_type).map_err(|e| P2pError::NetworkError(e.to_string()))
     }
+
 }
 
 #[cfg(test)]
