@@ -79,21 +79,21 @@ impl<'a> P2pApp<'a> {
                 let mut buf = Vec::new();
                 req.encode(&mut buf).unwrap();
                 session.send_encrypted("FileListRequest", &buf)?;
-                println!("[*] Sent FileListRequest to {}", peer_ip);
+                println!("<< Sent FileListRequest to {}", peer_ip);
             }
             SessionAction::RequestFile(file_id) => {
                 let req = FileRequest { file_id: file_id.clone() };
                 let mut buf = Vec::new();
                 req.encode(&mut buf).unwrap();
                 session.send_encrypted("FileRequest", &buf)?;
-                println!("[*] Sent FileRequest to {}", peer_ip);
+                println!("<< Sent FileRequest to {}", peer_ip);
             }
             SessionAction::OfferFile(metadata) => {
                 let offer = FileSendOffer { metadata: Some(metadata) };
                 let mut buf = Vec::new();
                 offer.encode(&mut buf).unwrap();
                 session.send_encrypted("FileSendOffer", &buf)?;
-                println!("[*] Sent FileSendOffer to {}", peer_ip);
+                println!("<< Sent FileSendOffer to {}", peer_ip);
             }
             SessionAction::None => {}
         }
@@ -103,7 +103,7 @@ impl<'a> P2pApp<'a> {
             let (msg_type, payload) = match session.receive_encrypted() {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("\n[-] Session with {} ended: {}", peer_ip, e);
+                    println!("\n<< Session with {} ended: {}", peer_ip, e);
                     return Err(e);
                 }
             };
@@ -114,12 +114,12 @@ impl<'a> P2pApp<'a> {
                 "FileRequest" => self.handle_file_request(&mut session, peer_ip, &payload)?,
                 "FileSendOffer" => self.handle_file_send_offer(&mut session, peer_ip, &payload)?,
                 "KeyRotationNotice" => self.handle_key_rotation_notice(peer_ip, &payload)?,
-                "FileResponse" => println!("\n[+] Received FileResponse. Transfer status updated."),
+                "FileResponse" => println!("\n<< Received FileResponse. Transfer status updated."),
                 "FileChunk" => self.handle_file_chunk(&payload)?,
                 "FileTransferComplete" => self.handle_file_transfer_complete(&payload, &peer_pub_key)?, 
                 "ErrorMessage" => self.handle_error_message(&payload)?,
                 _ => {
-                    println!("\n[-] Unhandled message type: {}", msg_type);
+                    println!("\n<< Unhandled message type: {}", msg_type);
                     self.send_error(&mut session, "INVALID_MESSAGE", "Unknown message type")?;
                 }
             }
@@ -128,13 +128,13 @@ impl<'a> P2pApp<'a> {
 
     fn handle_error_message(&self, payload: &[u8]) -> Result<(), P2pError> {
         let err = ErrorMessage::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
-        println!("\n[-] Received error: {} - {}", err.error_code, err.description);
+        println!("\n<< Received error: {} - {}", err.error_code, err.description);
         Ok(())
     }
 
     /// Returns actual files registered in the NodeState
     fn handle_file_list_request<S: Read + Write>(&self, session: &mut SecureSession<S>, peer_ip: &str) -> Result<(), P2pError> {
-        println!("\n[*] Peer {} requested file list.", peer_ip);
+        println!("\n<< Peer {} requested file list.", peer_ip);
         
         let state = self.state.lock().unwrap();
 
@@ -180,28 +180,28 @@ impl<'a> P2pApp<'a> {
             match state.file_registry.get(&req.file_id) {
                 Some(name) => name.clone(),
                 None => {
-                    println!("\n[-] Peer {} requested unknown file.", peer_ip);
+                    println!("\n<< Peer {} requested unknown file.", peer_ip);
                     return self.send_error(session, "FILE_NOT_FOUND", "File not available");
                 }
             }
         };
 
         let id_hex = hex::encode(&req.file_id[..4]);
-        println!("\n[!] Peer {} wants to download '{}'.", peer_ip, local_filename);
-        println!("[!] Type '/approve {}' or '/deny {}' to respond.", id_hex, id_hex);
+        println!("\n<< Peer {} wants to download '{}'.", peer_ip, local_filename);
+        println!("<< Type '/approve {}' or '/deny {}' to respond.", id_hex, id_hex);
 
         // Wait for user consent
         let approved = self.wait_for_consent(&id_hex);
 
         if !approved {
-            println!("\n[-] Consent denied. Notifying peer.");
+            println!("\n<< Consent denied. Notifying peer.");
             let response = FileResponse { approved: false, error_code: "CONSENT_DENIED".to_string() };
             let mut buf = Vec::new();
             response.encode(&mut buf).unwrap();
             return session.send_encrypted("FileResponse", &buf);
         }
 
-        println!("\n[+] Consent granted. Starting transfer of '{}'...", local_filename);
+        println!("\n<< Consent granted. Starting transfer of '{}'...", local_filename);
         let response = FileResponse { approved: true, error_code: String::new() };
         let mut buf = Vec::new();
         response.encode(&mut buf).unwrap();
@@ -222,10 +222,10 @@ impl<'a> P2pApp<'a> {
                 let mut comp_buf = Vec::new();
                 complete_msg.encode(&mut comp_buf).unwrap();
                 session.send_encrypted("FileTransferComplete", &comp_buf)?;
-                println!("[+] File transfer complete!");
+                println!("<< File transfer complete!");
             }
             Err(e) => {
-                println!("[-] Failed to read file from storage: {}", e);
+                println!("<< Failed to read file from storage: {}", e);
             }
         }
         Ok(())
@@ -237,8 +237,8 @@ impl<'a> P2pApp<'a> {
         let metadata = offer.metadata.ok_or(P2pError::InvalidMessage)?;
 
         let id_hex = hex::encode(&metadata.file_id[..4]);
-        println!("\n[!] Peer {} is offering to send you '{}' ({} bytes).", peer_ip, metadata.filename, metadata.file_size);
-        println!("[!] Type '/approve {}' or '/deny {}' to accept.", id_hex, id_hex);
+        println!("\n<< Peer {} is offering to send you '{}' ({} bytes).", peer_ip, metadata.filename, metadata.file_size);
+        println!("<< Type '/approve {}' or '/deny {}' to accept.", id_hex, id_hex);
 
         {
             let mut state = self.state.lock().unwrap();
@@ -248,13 +248,13 @@ impl<'a> P2pApp<'a> {
         let approved = self.wait_for_consent(&id_hex);
 
         if approved {
-            println!("\n[+] Offer accepted. Requesting file...");
+            println!("\n<< Offer accepted. Requesting file...");
             let req = FileRequest { file_id: metadata.file_id.clone() };
             let mut buf = Vec::new();
             req.encode(&mut buf).unwrap();
             session.send_encrypted("FileRequest", &buf)?;
         } else {
-            println!("\n[-] Offer denied.");
+            println!("\n<< Offer denied.");
         }
         Ok(())
     }
@@ -263,11 +263,11 @@ impl<'a> P2pApp<'a> {
     fn handle_key_rotation_notice(&self, peer_ip: &str, payload: &[u8]) -> Result<(), P2pError> {
         let notice = KeyRotationNotice::decode(payload).map_err(|_| P2pError::InvalidMessage)?;
         
-        println!("\n[!] SECURITY: Received Key Rotation Notice from {}", peer_ip);
+        println!("\n<< SECURITY: Received Key Rotation Notice from {}", peer_ip);
         
         // 1. Verify both the old and new signatures!
         if let Err(e) = verify_key_rotation(&notice) {
-            println!("[-] Key Rotation verification FAILED! {}", e);
+            println!("<< Key Rotation verification FAILED! {}", e);
             return Err(e);
         }
 
@@ -278,7 +278,7 @@ impl<'a> P2pApp<'a> {
         // Directly update the public map and force a save to disk
         let _ = ts.update_peer_key(peer_ip, &new_key);
         
-        println!("[+] Key Rotation successful. Trust Database updated for {}", peer_ip);
+        println!("<< Key Rotation successful. Trust Database updated for {}", peer_ip);
         Ok(())
     }
 
@@ -303,7 +303,7 @@ impl<'a> P2pApp<'a> {
         }
 
         // Timeout
-        println!("\n[-] Consent request for {} timed out.", id_hex);
+        println!("\n<< Consent request for {} timed out.", id_hex);
         let mut state = self.state.lock().unwrap();
         state.pending_consents.remove(id_hex);
         false
@@ -337,7 +337,7 @@ impl<'a> P2pApp<'a> {
         
         drop(state); // Drop lock before expensive crypto
 
-        println!("\n[*] All chunks received for '{}'. Verifying integrity and signatures...", metadata.filename);
+        println!("\n<< All chunks received for '{}'. Verifying integrity and signatures...", metadata.filename);
 
         // Verify SHA-256 Hash
         let mut hasher = Sha256::new();
@@ -350,21 +350,21 @@ impl<'a> P2pApp<'a> {
         let ts = self.trust_store.lock().unwrap();
         let owner_pub_vec = Self::resolve_owner_pubkey(&metadata, peer_pub_key, &ts)
             .ok_or_else(|| {
-                println!("[-] SECURITY ALERT: Unknown owner fingerprint. Cannot verify third-party file!");
+                println!("<< SECURITY ALERT: Unknown owner fingerprint. Cannot verify third-party file!");
                 P2pError::UntrustedKey
             })?;
         
         let owner_pub: [u8; 32] = owner_pub_vec.try_into().map_err(|_| P2pError::InvalidMessage)?;
         
         if let Err(e) = crate::protocol::verification::verify_metadata(&metadata, &owner_pub) {
-             println!("[-] SECURITY ALERT: Invalid owner signature on file '{}'! File dropped.", metadata.filename);
+             println!("<< SECURITY ALERT: Invalid owner signature on file '{}'! File dropped.", metadata.filename);
              return Err(e);
         }
         drop(ts);
         // ------------------------------------------
 
         self.storage.write_file(&metadata.filename, &received_data)?;
-        println!("[+] Verification passed! File '{}' securely saved to vault.", metadata.filename);
+        println!("<< Verification passed! File '{}' securely saved to vault.", metadata.filename);
 
         let mut state = self.state.lock().unwrap();
         state.file_registry.insert(comp.file_id.clone(), metadata.filename.clone());
@@ -376,7 +376,7 @@ impl<'a> P2pApp<'a> {
         drop(state);
 
         if let Err(e) = self.storage.write_third_party_metadata(&map_to_save) {
-            println!("[-] Failed to save third-party metadata: {}", e);
+            println!("<< Failed to save third-party metadata: {}", e);
         }
         
         Ok(())

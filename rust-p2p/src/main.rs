@@ -32,7 +32,7 @@ fn main() -> Result<(), P2pError> {
     let port = 9468; 
 
     // 1. Vault & Identity Setup
-    let password = rpassword::prompt_password("[?] Enter your secure vault password: ")
+    let password = rpassword::prompt_password("<< Enter your secure vault password: ")
         .expect("Failed to read password from terminal");
         
     let storage = SecureStorage::new(storage_dir, &password, salt)?;
@@ -43,7 +43,7 @@ fn main() -> Result<(), P2pError> {
     let is_new_vault = !std::path::Path::new(&identity_filepath).exists();
 
     let my_id_secret = if is_new_vault {
-        println!("[*] No identity key found. Generating a fresh Ed25519 keypair...");
+        println!("<< No identity key found. Generating a fresh Ed25519 keypair...");
         let mut csprng = OsRng;
         let new_key = SigningKey::generate(&mut csprng);
         storage.write_file(identity_filename, &new_key.to_bytes())?;
@@ -52,12 +52,12 @@ fn main() -> Result<(), P2pError> {
         // The file exists on disk. If read_file fails now, it is a wrong password.
         match storage.read_file(identity_filename) {
             Ok(key_bytes) => {
-                println!("[+] Vault unlocked successfully. Loaded existing identity.");
+                println!("<< Local storage decrypted. Loaded existing identity.");
                 let secret_bytes: [u8; 32] = key_bytes.try_into().expect("Invalid key length");
                 SigningKey::from_bytes(&secret_bytes)
             }
             Err(_) => {
-                println!("\n[!] FATAL SECURITY ERROR");
+                println!("\n<< FATAL SECURITY ERROR");
                 println!("Failed to decrypt the identity key. You entered an incorrect password.");
                 println!("Shutting down to prevent data corruption.");
                 std::process::exit(1);
@@ -71,7 +71,7 @@ fn main() -> Result<(), P2pError> {
     
     // Load third-party cache on startup
     if let Ok(tp_meta) = storage.read_third_party_metadata() {
-        println!("[+] Loaded {} third-party files from secure storage.", tp_meta.len());
+        println!("<< Loaded {} third-party files from secure storage.", tp_meta.len());
         let mut state = node_state.lock().unwrap();
         for (id, meta) in tp_meta {
             state.file_registry.insert(id.clone(), meta.filename.clone());
@@ -103,7 +103,7 @@ fn main() -> Result<(), P2pError> {
     let p2p_app = P2pApp::new(display_name, &storage, Arc::clone(&node_state), Arc::clone(&trust_store));
 
     // 3. Discovery Setup
-    println!("[*] Initializing mDNS discovery...");
+    println!("<< Initializing mDNS discovery...");
     let discovery = Discovery::new()?;
     discovery.start_advertising(display_name, port)?;
     
@@ -121,7 +121,7 @@ fn main() -> Result<(), P2pError> {
                 // PHASE 1: A peer broadcasted their presence, but we don't know their IP yet
                 mdns_sd::ServiceEvent::ServiceFound(_service_type, fullname) => {
                     if !fullname.contains(&my_name) {
-                        println!("\n[*] mDNS: Heard broadcast from '{}'. Resolving IP address...", fullname);
+                        println!("\n<< mDNS: Heard broadcast from '{}'. Resolving IP address...", fullname);
                         print!("p2p-node> ");
                         let _ = io::stdout().flush();
                     }
@@ -134,7 +134,7 @@ fn main() -> Result<(), P2pError> {
                         if ips.is_empty() {
                             println!("\n[-] mDNS ERROR: Resolved '{}' but couldn't extract an IP address!", info.get_fullname());
                         } else {
-                            println!("\n\n[+] 📡 mDNS DISCOVERY: Found Peer!");
+                            println!("\n\n<< 📡 mDNS DISCOVERY: Found Peer!");
                             println!("    -> Name: {}", info.get_fullname());
                             println!("    -> IP Addresses: {:?}", ips);
                             println!("    -> Try: /list {}", ips[0]);
@@ -149,7 +149,7 @@ fn main() -> Result<(), P2pError> {
         }
     });
 
-    println!("[+] Node is fully initialized and online!\n");
+    println!("<< Node is fully initialized and online!\n");
 
     // 4. Multithreaded CLI Environment
     let app_ref = &p2p_app;
@@ -175,7 +175,7 @@ fn main() -> Result<(), P2pError> {
                                 {
                                     let mut ts = ts_conn.lock().unwrap();
                                     if let Err(e) = ts.verify_or_trust_peer(&peer_ip, &peer_pub) {
-                                        println!("\n[-] Connection rejected by Trust Store: {}", e);
+                                        println!("\n<< Connection rejected by Trust Store: {}", e);
                                         return; 
                                     }
                                 }
@@ -183,7 +183,7 @@ fn main() -> Result<(), P2pError> {
                                 let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::None);
                             }
                             Err(e) => {
-                                println!("[-] Inbound handshake failed from {}: {:?}", peer_addr, e);
+                                println!("<< Inbound handshake failed from {}: {:?}", peer_addr, e);
                             }
                         }
                     });
@@ -232,9 +232,9 @@ fn main() -> Result<(), P2pError> {
                         if state.pending_consents.contains_key(id) {
                             let decision = command == "/approve";
                             state.pending_consents.insert(id.to_string(), Some(decision));
-                            println!("[+] Marked request {} as {}", id, if decision { "APPROVED" } else { "DENIED" });
+                            println!("<< Marked request {} as {}", id, if decision { "APPROVED" } else { "DENIED" });
                         } else {
-                            println!("[-] No pending request found with ID {}", id);
+                            println!("<< No pending request found with ID {}", id);
                         }
                     } else {
                         println!("Usage: {} <hex_id>", command);
@@ -258,10 +258,10 @@ fn main() -> Result<(), P2pError> {
                                     let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                                     let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFileList);
                                 } else {
-                                    println!("[-] Handshake failed with {}. Is the peer online and running the same protocol version?", target);
+                                    println!("<< Handshake failed with {}. Is the peer online and running the same protocol version?", target);
                                 }
                             } else {
-                                println!("[-] Failed to connect to {}. Is the IP correct and is the peer online?", target);
+                                println!("<< Failed to connect to {}. Is the IP correct and is the peer online?", target);
                             }
                         });
                     } else { println!("Usage: /list <ip_address>"); }
@@ -300,7 +300,7 @@ fn main() -> Result<(), P2pError> {
                                 }
                             });
                         } else {
-                            println!("[-] Unknown short ID '{}'. Did you run '/list {}' first to cache the file?", hex_id, ip);
+                            println!("<< Unknown short ID '{}'. Did you run '/list {}' first to cache the file?", hex_id, ip);
                         }
                     } else { println!("Usage: /request <ip_address> <hex_id>"); }
                 }
