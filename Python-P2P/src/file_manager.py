@@ -42,18 +42,45 @@ def verify_file_id(metadata) -> bool:
 
 
 class FileManager:
-    def __init__(self, shared_dir, identity_private_key, identity_public_key):
+    def __init__(self, shared_dir, identity_private_key, identity_public_key, storage):
         self.shared_dir = shared_dir
         self.identity_priv = identity_private_key
         self.identity_pub = identity_public_key
         self.identity_pub_bytes = get_public_key_bytes(identity_public_key)
+        self.storage = storage
         self.files = {}  # file_id bytes -> (filepath, FileMetadata)
         self.third_party = {}  # file_id bytes -> FileMetadata (original owner's)
 
-    def create_file_metadata(self, filepath) -> FileMetadata:
-        filename = os.path.basename(filepath)
+    def _read_file(self, filepath):
+        """Read a file, decrypting if encrypted. Returns plaintext bytes."""
         with open(filepath, "rb") as f:
             raw = f.read()
+        # Try decrypting — if it fails, it's a plaintext file (newly added by user)
+        try:
+            return self.storage.decrypt_data(raw)
+        except Exception:
+            return raw
+
+    def _write_file(self, filepath, plaintext):
+        """Write encrypted file to disk."""
+        blob = self.storage.encrypt_data(plaintext)
+        with open(filepath, "wb") as f:
+            f.write(blob)
+
+    def _encrypt_if_plaintext(self, filepath):
+        """If file is plaintext, encrypt it in place. Returns plaintext either way."""
+        with open(filepath, "rb") as f:
+            raw = f.read()
+        try:
+            return self.storage.decrypt_data(raw)
+        except Exception:
+            # It's plaintext — encrypt it in place
+            self._write_file(filepath, raw)
+            return raw
+
+    def create_file_metadata(self, filepath) -> FileMetadata:
+        filename = os.path.basename(filepath)
+        raw = self._read_file(filepath)
 
         file_hash = sha256(raw)
         file_size = len(raw)
@@ -80,10 +107,11 @@ class FileManager:
             filepath = os.path.join(self.shared_dir, meta.filename)
             if os.path.isfile(filepath):
                 self.files[file_id] = (filepath, meta)
-        # Scan our own files, skip anything already tracked as third-party
+        # Scan our own files, encrypt any plaintext files in place
         for name in os.listdir(self.shared_dir):
             path = os.path.join(self.shared_dir, name)
             if os.path.isfile(path):
+                self._encrypt_if_plaintext(path)
                 meta = self.create_file_metadata(path)
                 if meta.file_id not in self.third_party:
                     self.files[meta.file_id] = (path, meta)

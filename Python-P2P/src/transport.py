@@ -125,7 +125,7 @@ class ConnectionManager:
                         owner_key = resolve_owner_pubkey(meta, session.peer_identity_pubkey, self.trust_store)
                         if owner_key is None:
                             owner_key = session.peer_identity_pubkey
-                        await receive_file(session, reader, meta, output_dir, owner_key)
+                        await receive_file(session, reader, meta, output_dir, owner_key, file_manager=self.file_manager)
                         self.file_manager.store_third_party_metadata(meta)
                         print(f"Received file: {meta.filename}")
                     else:

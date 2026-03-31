@@ -125,19 +125,17 @@ async def handle_file_request(session, reader, writer, file_manager):
 
 async def send_file(session, writer, file_manager, file_id, chunk_size=65536):
     filepath = file_manager.get_file_path(file_id)
+    # Decrypt file from secure storage before sending
+    file_bytes = file_manager._read_file(filepath)
     chunk_index = 0
 
-    with open(filepath, "rb") as f:
-        while True:
-            data = f.read(chunk_size)
-            if not data:
-                break
-            chunk = FileChunk()
-            chunk.file_id = file_id
-            chunk.chunk_index = chunk_index
-            chunk.data = data
-            await send_app_message(session, writer, FILE_CHUNK, chunk)
-            chunk_index += 1
+    for i in range(0, len(file_bytes), chunk_size):
+        chunk = FileChunk()
+        chunk.file_id = file_id
+        chunk.chunk_index = chunk_index
+        chunk.data = file_bytes[i:i + chunk_size]
+        await send_app_message(session, writer, FILE_CHUNK, chunk)
+        chunk_index += 1
 
     complete = FileTransferComplete()
     complete.file_id = file_id
@@ -145,7 +143,7 @@ async def send_file(session, writer, file_manager, file_id, chunk_size=65536):
     await send_app_message(session, writer, FILE_TRANSFER_COMPLETE, complete)
 
 
-async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes) -> str:
+async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes, file_manager=None) -> str:
     chunks = {}
 
     try:
@@ -163,18 +161,21 @@ async def receive_file(session, reader, expected_metadata, output_dir, owner_pub
     for i in range(len(chunks)):
         file_bytes += chunks[i]
 
-    filepath = os.path.join(output_dir, expected_metadata.filename)
-    with open(filepath, "wb") as f:
-        f.write(file_bytes)
-
-    # Verify signature first, then integrity
+    # Verify signature against plaintext before writing
     if not verify_file_metadata(expected_metadata, owner_pubkey_bytes):
-        os.remove(filepath)
         raise P2PError(INVALID_FILE_SIGNATURE, "File metadata signature invalid")
 
-    if not verify_file_integrity(filepath, expected_metadata):
-        os.remove(filepath)
+    # Verify hash against plaintext
+    if sha256(file_bytes) != expected_metadata.file_hash:
         raise P2PError(FILE_HASH_MISMATCH, "File hash does not match metadata")
+
+    # Write encrypted to disk
+    filepath = os.path.join(output_dir, expected_metadata.filename)
+    if file_manager:
+        file_manager._write_file(filepath, file_bytes)
+    else:
+        with open(filepath, "wb") as f:
+            f.write(file_bytes)
 
     return filepath
 

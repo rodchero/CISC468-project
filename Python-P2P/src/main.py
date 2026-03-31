@@ -56,7 +56,7 @@ async def main():
 
     # Set up shared files directory
     os.makedirs(SHARED_DIR, exist_ok=True)
-    file_mgr = FileManager(SHARED_DIR, priv, pub)
+    file_mgr = FileManager(SHARED_DIR, priv, pub, storage)
 
     # Load cached third-party metadata before scanning
     cache = storage.load_metadata_cache()
@@ -202,7 +202,7 @@ async def main():
                         print("Cannot verify file: original owner not in trust store.")
                         continue
                     filepath = await receive_file(
-                        current_session, current_reader, meta, SHARED_DIR, owner_key
+                        current_session, current_reader, meta, SHARED_DIR, owner_key, file_manager=file_mgr
                     )
                     file_mgr.store_third_party_metadata(meta)
                     print(f"File saved: {filepath}")
