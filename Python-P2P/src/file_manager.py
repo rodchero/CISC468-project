@@ -42,7 +42,7 @@ def verify_file_id(metadata) -> bool:
 
 
 class FileManager:
-    def __init__(self, shared_dir, identity_private_key, identity_public_key, storage):
+    def __init__(self, shared_dir, identity_private_key, identity_public_key, storage=None):
         self.shared_dir = shared_dir
         self.identity_priv = identity_private_key
         self.identity_pub = identity_public_key
@@ -55,7 +55,8 @@ class FileManager:
         """Read a file, decrypting if encrypted. Returns plaintext bytes."""
         with open(filepath, "rb") as f:
             raw = f.read()
-        # Try decrypting — if it fails, it's a plaintext file (newly added by user)
+        if self.storage is None:
+            return raw
         try:
             return self.storage.decrypt_data(raw)
         except Exception:
@@ -63,6 +64,10 @@ class FileManager:
 
     def _write_file(self, filepath, plaintext):
         """Write encrypted file to disk."""
+        if self.storage is None:
+            with open(filepath, "wb") as f:
+                f.write(plaintext)
+            return
         blob = self.storage.encrypt_data(plaintext)
         with open(filepath, "wb") as f:
             f.write(blob)
@@ -71,10 +76,11 @@ class FileManager:
         """If file is plaintext, encrypt it in place. Returns plaintext either way."""
         with open(filepath, "rb") as f:
             raw = f.read()
+        if self.storage is None:
+            return raw
         try:
             return self.storage.decrypt_data(raw)
         except Exception:
-            # It's plaintext — encrypt it in place
             self._write_file(filepath, raw)
             return raw
 

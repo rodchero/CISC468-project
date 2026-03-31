@@ -112,7 +112,8 @@ async def main():
             print("6. Rotate identity key")
             print("7. View trusted contacts")
             print("8. Rescan shared files")
-            print("9. Exit")
+            print("9. Export decrypted file")
+            print("10. Exit")
             print("\n> ", end="", flush=True)
 
             # Race: wait for user input OR a consent request from a peer
@@ -263,6 +264,23 @@ async def main():
                 print(f"Found {len(file_mgr.get_file_list())} files.")
 
             elif choice == "9":
+                file_mgr.scan_files()
+                our_files = file_mgr.get_file_list()
+                if not our_files:
+                    print("No files to export.")
+                    continue
+                for i, f in enumerate(our_files):
+                    print(f"  {i+1}. {f.filename} ({f.file_size} bytes)")
+                idx = int((await get_input("Select file to export: ")).strip()) - 1
+                meta = our_files[idx]
+                filepath = file_mgr.get_file_path(meta.file_id)
+                plaintext = file_mgr._read_file(filepath)
+                export_path = os.path.join(BASE_DIR, f"exported_{meta.filename}")
+                with open(export_path, "wb") as f:
+                    f.write(plaintext)
+                print(f"Decrypted file exported to: {export_path}")
+
+            elif choice == "10":
                 break
 
             else:
