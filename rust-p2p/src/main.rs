@@ -320,8 +320,8 @@ fn main() -> Result<(), P2pError> {
                                         let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
                                         // Pass the actual full_id, not the zero-padded one
                                         let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFile(full_id));
-                                    }
-                                }
+                                    } else { println!("<< Handshake err") }
+                                } else { println!("<< TCP connection err") }
                             });
                         } else {
                             println!("<< Unknown short ID '{}'. Did you run '/list {}' first to cache the file?", hex_id, ip);
