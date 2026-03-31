@@ -145,7 +145,7 @@ async def send_file(session, writer, file_manager, file_id, chunk_size=65536):
     await send_app_message(session, writer, FILE_TRANSFER_COMPLETE, complete)
 
 
-async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes) -> str:
+async def receive_file(session, reader, expected_metadata, output_dir, owner_pubkey_bytes, skip_sig=False) -> str:
     chunks = {}
 
     try:
@@ -167,8 +167,10 @@ async def receive_file(session, reader, expected_metadata, output_dir, owner_pub
     with open(filepath, "wb") as f:
         f.write(file_bytes)
 
-    # Verify signature first, then integrity
-    if not verify_file_metadata(expected_metadata, owner_pubkey_bytes):
+    # Verify signature (skip if original owner unknown)
+    if skip_sig:
+        print("Signature verification skipped (unknown owner).")
+    elif not verify_file_metadata(expected_metadata, owner_pubkey_bytes):
         os.remove(filepath)
         raise P2PError(INVALID_FILE_SIGNATURE, "File metadata signature invalid")
 
