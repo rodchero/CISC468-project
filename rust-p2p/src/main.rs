@@ -273,7 +273,8 @@ fn main() -> Result<(), P2pError> {
                         let ts_cmd = Arc::clone(&trust_store);
                         
                         s.spawn(move || {
-                            if let Ok(mut tcp_stream) = TcpStream::connect(&target) {
+                            match TcpStream::connect(&target) {
+                                Ok(mut tcp_stream) => {
                                 if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
                                     {
                                         let mut ts = ts_cmd.lock().unwrap();
@@ -284,8 +285,10 @@ fn main() -> Result<(), P2pError> {
                                 } else {
                                     println!("<< Handshake failed with {}. Is the peer online and running the same protocol version?", target);
                                 }
-                            } else {
-                                println!("<< Failed to connect to {}. Is the IP correct and is the peer online?", target);
+                            }    
+                            Err(e) => {
+                                println!("<< Failed to connect to {}, {}", target, e);
+                            }
                             }
                         });
                     } else { println!("Usage: /list <ip_address>"); }
