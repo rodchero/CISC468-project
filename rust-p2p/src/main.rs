@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::SystemTime;
 
 use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
@@ -81,10 +82,10 @@ fn main() -> Result<(), P2pError> {
         }
     }
 
-// --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
-    let test_file_bytes = vec![0x00; 1024]; // 1KB of zeros
+    // --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
+    let test_file_bytes = vec![0x41; 1024]; // 1KB of "A"
     let file_hash = Sha256::digest(&test_file_bytes).to_vec();
-    let filename = "test_image.png".to_string();
+    let filename = "test_AAA.txt".to_string();
     let file_size = test_file_bytes.len() as u64;
 
     // owner_fingerprint must be SHA-256(public_key), not raw public key
@@ -235,12 +236,17 @@ fn main() -> Result<(), P2pError> {
             match command {
                 "/help" => {
                     println!("--- Available Commands ---");
-                    println!(" /list <ip>             : Request a peer's file list");
-                    println!(" /request <ip> <hex_id> : Request a file from a peer");
-                    println!(" /approve <hex_id>      : Approve a pending file request or offer");
-                    println!(" /deny <hex_id>         : Deny a pending file request or offer");
-                    println!(" /local_files           : Show the files currently in your vault");
-                    println!(" /quit                  : Shut down the node");
+                    println!(" /list <ip>                  : Request a peer's file list");
+                    println!(" /request <ip> <hex_id>      : Request a file from a peer");
+                    println!(" /send <ip> <hex_id>         : Send (offer) a local file to a peer");
+                    println!(" /import <filepath>          : Add a local file to the secure vault");
+                    println!(" /export <hex_id> <filepath> : Decrypt and save a file to disk");
+                    println!(" /remove <hex_id>            : Delete a file from the secure vault");
+                    println!(" /view <hex_id>              : Print the contents of a text file");
+                    println!(" /approve <hex_id>           : Approve a pending file request or offer");
+                    println!(" /deny <hex_id>              : Deny a pending file request or offer");
+                    println!(" /local_files                : Show the files currently in your vault");
+                    println!(" /quit                       : Shut down the node");
                 }
                 "/quit" | "/q" => std::process::exit(0),
                 "/local_files" => {
@@ -264,6 +270,140 @@ fn main() -> Result<(), P2pError> {
                         println!("Usage: {} <hex_id>", command);
                     }
                 }
+                "/import" => {
+                    if let Some(filepath) = args.next() {
+                        let path = std::path::Path::new(filepath);
+                        match std::fs::read(path) {
+                            Ok(bytes) => {
+                                let filename = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                                let file_size = bytes.len() as u64;
+                                let file_hash = Sha256::digest(&bytes).to_vec();
+                                let owner_fp = Sha256::digest(secret_ref.verifying_key().as_bytes()).to_vec();
+                                
+                                let mut hasher = Sha256::new();
+                                hasher.update(filename.as_bytes());
+                                hasher.update(&file_hash);
+                                hasher.update(&file_size.to_be_bytes());
+                                let file_id = hasher.finalize().to_vec();
+
+                                let timestamp = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+                                let mut metadata = FileMetadata {
+                                    owner_fingerprint: owner_fp,
+                                    file_id: file_id.clone(),
+                                    filename: filename.clone(),
+                                    file_size,
+                                    file_hash,
+                                    timestamp,
+                                    owner_signature: vec![],
+                                };
+
+                                // Sign the metadata
+                                if let Err(e) = sign_metadata(secret_ref, &mut metadata) {
+                                    println!("<< Failed to sign metadata: {}", e);
+                                    continue;
+                                }
+
+                                // Write to secure storage
+                                if let Err(e) = app_ref.storage.write_file(&filename, &bytes) {
+                                    println!("<< Failed to write to secure vault: {}", e);
+                                    continue;
+                                }
+                                
+                                let mut state = node_state.lock().unwrap();
+                                state.file_registry.insert(file_id.clone(), filename.clone());
+                                state.metadata_cache.insert(file_id.clone(), metadata);
+                                
+                                println!("<< Success! Added '{}' to secure vault (ID: {}).", filename, hex::encode(&file_id[..4]));
+                            }
+                            Err(e) => println!("<< Failed to read local file '{}': {}", filepath, e),
+                        }
+                    } else {
+                        println!("Usage: /add <filepath>");
+                    }
+                }
+                "/remove" => {
+                    if let Some(hex_id) = args.next() {
+                        let mut state = node_state.lock().unwrap();
+                        let target = state.file_registry.keys().find(|id| {
+                            let prefix_len = std::cmp::min(4, id.len());
+                            hex::encode(&id[..prefix_len]) == hex_id
+                        }).cloned();
+
+                        if let Some(full_id) = target {
+                            if let Some(filename) = state.file_registry.remove(&full_id) {
+                                state.metadata_cache.remove(&full_id);
+                                state.third_party_metadata.remove(&full_id);
+                                // Delete from disk vault
+                                let _ = app_ref.storage.delete_file(&filename);
+                                println!("<< Removed '{}' (ID: {}) from secure vault.", filename, hex_id);
+                            }
+                        } else {
+                            println!("<< Unknown file ID '{}'", hex_id);
+                        }
+                    } else {
+                        println!("Usage: /remove <hex_id>");
+                    }
+                }
+                "/export" => {
+                    if let (Some(hex_id), Some(dest_path)) = (args.next(), args.next()) {
+                        let target_filename = {
+                            let state = node_state.lock().unwrap();
+                            state.file_registry.iter().find(|(id, _)| {
+                                let prefix_len = std::cmp::min(4, id.len());
+                                hex::encode(&id[..prefix_len]) == hex_id
+                            }).map(|(_, name)| name.clone())
+                        };
+
+                        if let Some(filename) = target_filename {
+                            match app_ref.storage.read_file(&filename) {
+                                Ok(bytes) => {
+                                    match std::fs::write(dest_path, &bytes) {
+                                        Ok(_) => println!("<< Success! File exported decrypted to '{}'.", dest_path),
+                                        Err(e) => println!("<< Failed to write exported file: {}", e),
+                                    }
+                                }
+                                Err(e) => println!("<< Failed to read from secure vault: {}", e),
+                            }
+                        } else {
+                            println!("<< Unknown file ID '{}'", hex_id);
+                        }
+                    } else {
+                        println!("Usage: /export <hex_id> <destination_filepath>");
+                    }
+                }
+                "/view" => {
+                    if let Some(hex_id) = args.next() {
+                        let target_filename = {
+                            let state = node_state.lock().unwrap();
+                            state.file_registry.iter().find(|(id, _)| {
+                                let prefix_len = std::cmp::min(4, id.len());
+                                hex::encode(&id[..prefix_len]) == hex_id
+                            }).map(|(_, name)| name.clone())
+                        };
+
+                        if let Some(filename) = target_filename {
+                            match app_ref.storage.read_file(&filename) {
+                                Ok(bytes) => {
+                                    let content = String::from_utf8_lossy(&bytes);
+                                    println!("\n--- Contents of '{}' ---", filename);
+                                    for (i, line) in content.lines().take(100).enumerate() {
+                                        println!("{:3} | {}", i + 1, line);
+                                    }
+                                    if content.lines().count() > 100 {
+                                        println!("... (truncated after 100 lines) ...");
+                                    }
+                                    println!("--------------------------\n");
+                                }
+                                Err(e) => println!("<< Failed to read from secure vault: {}", e),
+                            }
+                        } else {
+                            println!("<< Unknown file ID '{}'", hex_id);
+                        }
+                    } else {
+                        println!("Usage: /view <hex_id>");
+                    }
+                }
                 "/list" => {
                     if let Some(ip) = args.next() {
                         let target = format!("{}:{}", ip, port);
@@ -275,20 +415,20 @@ fn main() -> Result<(), P2pError> {
                         s.spawn(move || {
                             match TcpStream::connect(&target) {
                                 Ok(mut tcp_stream) => {
-                                if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
-                                    {
-                                        let mut ts = ts_cmd.lock().unwrap();
-                                        if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                        {
+                                            let mut ts = ts_cmd.lock().unwrap();
+                                            if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                        }
+                                        let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                        let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFileList);
+                                    } else {
+                                        println!("<< Handshake failed with {}. Is the peer online and running the same protocol version?", target);
                                     }
-                                    let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                    let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFileList);
-                                } else {
-                                    println!("<< Handshake failed with {}. Is the peer online and running the same protocol version?", target);
+                                }    
+                                Err(e) => {
+                                    println!("<< Failed to connect to {}, {}", target, e);
                                 }
-                            }    
-                            Err(e) => {
-                                println!("<< Failed to connect to {}, {}", target, e);
-                            }
                             }
                         });
                     } else { println!("Usage: /list <ip_address>"); }
@@ -330,6 +470,43 @@ fn main() -> Result<(), P2pError> {
                             println!("<< Unknown short ID '{}'. Did you run '/list {}' first to cache the file?", hex_id, ip);
                         }
                     } else { println!("Usage: /request <ip_address> <hex_id>"); }
+                }
+                "/send" => {
+                    if let (Some(ip), Some(hex_id)) = (args.next(), args.next()) {
+                        let target_metadata = {
+                            let state = node_state.lock().unwrap();
+                            state.metadata_cache.iter().find(|(id, _)| {
+                                let prefix_len = std::cmp::min(4, id.len());
+                                hex::encode(&id[..prefix_len]) == hex_id
+                            }).map(|(_, meta)| meta.clone())
+                        };
+
+                        if let Some(metadata) = target_metadata {
+                            let target = format!("{}:{}", ip, port);
+                            let peer_ip = ip.to_string();
+                            let ts_cmd = Arc::clone(&trust_store);
+
+                            s.spawn(move || {
+                                match TcpStream::connect(&target) {
+                                    Ok(mut tcp_stream) => {
+                                        if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                            {
+                                                let mut ts = ts_cmd.lock().unwrap();
+                                                if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                            }
+                                            let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                            let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::OfferFile(metadata));
+                                        } else {
+                                            println!("<< Handshake failed with {}", target);
+                                        }
+                                    }
+                                    Err(e) => println!("<< Failed to connect to {}, {}", target, e),
+                                }
+                            });
+                        } else {
+                            println!("<< Unknown file ID '{}'. Did you check '/local_files'?", hex_id);
+                        }
+                    } else { println!("Usage: /send <ip_address> <hex_id>"); }
                 }
                 _ => println!("Unknown command. Type /help."),
             }
