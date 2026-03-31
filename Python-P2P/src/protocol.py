@@ -185,10 +185,22 @@ async def offer_file(session, reader, writer, metadata) -> bool:
     await send_app_message(session, writer, FILE_SEND_OFFER, offer)
 
     msg_type, resp = await recv_app_message(session, reader)
-    if resp.accepted:
+
+    if msg_type == FILE_SEND_RESPONSE:
+        # Python-to-Python: peer sends FileSendResponse
+        if resp.accepted:
+            return True
+        print("Peer declined the file.")
+        return False
+    elif msg_type == FILE_REQUEST:
+        # Rust interop: peer sends FileRequest (means accepted)
+        file_resp = FileResponse()
+        file_resp.approved = True
+        await send_app_message(session, writer, FILE_RESPONSE, file_resp)
         return True
-    print("Peer declined the file.")
-    return False
+    else:
+        print(f"Unexpected response to file offer: {msg_type}")
+        return False
 
 
 async def handle_file_offer(session, reader, writer, output_dir, owner_pubkey_bytes):
