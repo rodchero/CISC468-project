@@ -8,26 +8,29 @@
 ### Dependencies
 - rust & cargo (see: https://rust-lang.org/tools/install/)
 - protobuf compiler
-    - MAC: ```bash 
-    brew install protobuf```
-    - Ubuntu/Debian: ```bash
-    sudo apt update && sudo apt install protobuf-compiler```
-    - WINDOWS: ```cmd
-    winget install protobuf```
+    - MAC: 
+    ```bash
+    brew install protobuf
+    ```
+    - Ubuntu/Debian: 
+    ```bash
+    sudo apt update && sudo apt install protobuf-compiler
+    ```
+    - WINDOWS: 
+    ```cmd
+    winget install protobuf
+    ```
 
 ### Run
 - cd into rust-p2p/
-- run ```bash
-cargo test``` to test
-- run ```bash
-cargo run``` to run the app
+- run `cargo test` to test
+- run `cargo run` to run the app
 
 ### Use
 - first time login : make password 
     - if you forget password, delete the vault directory (`rust-p2p/vault/`), this will reset the storage, including peer trust, local files, etc
 - every login thereafter, use the same password
-- ```
-/help``` for a list of commands
+- `/help` for a list of commands
 
 
 ## Python Client
