@@ -30,7 +30,7 @@ fn main() -> Result<(), P2pError> {
     println!("==========================================");
 
     let display_name = "Bob";
-    let storage_dir = "./roman_p2p_vault";
+    let storage_dir = "./vault";
     let salt = b"cisc468_static_salt_1234"; 
     let port = 9468; 
 
