@@ -199,14 +199,11 @@ async def main():
                         meta, current_session.peer_identity_pubkey, trust_store
                     )
                     if owner_key is None:
-                        print("Warning: unknown original owner. Cannot verify signature — skipping verification.")
-                        filepath = await receive_file(
-                            current_session, current_reader, meta, SHARED_DIR, owner_key, skip_sig=True
-                        )
-                    else:
-                        filepath = await receive_file(
-                            current_session, current_reader, meta, SHARED_DIR, owner_key
-                        )
+                        print("Cannot verify file: original owner not in trust store.")
+                        continue
+                    filepath = await receive_file(
+                        current_session, current_reader, meta, SHARED_DIR, owner_key
+                    )
                     file_mgr.store_third_party_metadata(meta)
                     print(f"File saved: {filepath}")
 
