@@ -319,7 +319,7 @@ fn main() -> Result<(), P2pError> {
                             Err(e) => println!("<< Failed to read local file '{}': {}", filepath, e),
                         }
                     } else {
-                        println!("Usage: /add <filepath>");
+                        println!("Usage: /import <filepath>");
                     }
                 }
                 "/remove" => {

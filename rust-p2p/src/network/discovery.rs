@@ -1,8 +1,6 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-use std::time::Duration;
 use crate::error::P2pError;
 
-#[derive(Clone)]
 pub struct Discovery {
     daemon: ServiceDaemon,
 }
@@ -53,6 +51,7 @@ impl Discovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_mdns_advertise_and_discover() {
