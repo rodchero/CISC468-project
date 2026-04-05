@@ -30,7 +30,7 @@ fn main() -> Result<(), P2pError> {
     println!("==========================================");
 
     let display_name = "Bob";
-    let storage_dir = "./vault";
+    let storage_dir = "./roman_p2p_vault";
     let salt = b"cisc468_static_salt_1234"; 
     let port = 9468; 
 
@@ -45,7 +45,7 @@ fn main() -> Result<(), P2pError> {
     let identity_filepath = format!("{}/{}", storage_dir, identity_filename);
     let is_new_vault = !std::path::Path::new(&identity_filepath).exists();
 
-    let my_id_secret = if is_new_vault {
+    let my_id_secret_base = if is_new_vault {
         println!("<< No identity key found. Generating a fresh Ed25519 keypair...");
         let mut csprng = OsRng;
         let new_key = SigningKey::generate(&mut csprng);
@@ -68,6 +68,9 @@ fn main() -> Result<(), P2pError> {
         }
     };
 
+    // Wrap the secret in an Arc<Mutex> so it can be mutated during a key rotation
+    let my_id_secret = Arc::new(Mutex::new(my_id_secret_base));
+
     // 2. Trust Store & Application State Setup
     let trust_store = Arc::new(Mutex::new(TrustStore::new(&storage)?));
     let node_state = Arc::new(Mutex::new(NodeState::default()));
@@ -83,13 +86,15 @@ fn main() -> Result<(), P2pError> {
     }
 
     // --- DEMO SETUP: Inject a dummy file into our local state so we have something to share ---
-    let test_file_bytes = vec![0x41; 1024]; // 1KB of "A"
+    let test_file_bytes = vec![0x00; 1024]; // 1KB of zeros
     let file_hash = Sha256::digest(&test_file_bytes).to_vec();
-    let filename = "test_AAA.txt".to_string();
+    let filename = "test_image.png".to_string();
     let file_size = test_file_bytes.len() as u64;
 
-    // owner_fingerprint must be SHA-256(public_key), not raw public key
-    let owner_fp = Sha256::digest(my_id_secret.verifying_key().as_bytes()).to_vec();
+    let owner_fp = {
+        let secret = my_id_secret.lock().unwrap();
+        Sha256::digest(secret.verifying_key().as_bytes()).to_vec()
+    };
 
     // file_id = SHA-256(filename | file_hash | file_size_BE)
     let file_id = {
@@ -111,7 +116,10 @@ fn main() -> Result<(), P2pError> {
     };
 
     // Actually sign the canonical bytes!
-    sign_metadata(&my_id_secret, &mut dummy_metadata).unwrap();
+    {
+        let secret = my_id_secret.lock().unwrap();
+        sign_metadata(&*secret, &mut dummy_metadata).unwrap();
+    }
 
     {
         let mut state = node_state.lock().unwrap();
@@ -178,11 +186,11 @@ fn main() -> Result<(), P2pError> {
 
     // 4. Multithreaded CLI Environment
     let app_ref = &p2p_app;
-    let secret_ref = &my_id_secret;
     let ts_listener = Arc::clone(&trust_store);
 
     thread::scope(|s| {
         // BACKGROUND THREAD: The Listener
+        let listener_secret_ref = Arc::clone(&my_id_secret);
         s.spawn(move || {
             let listener = TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind TCP port");
             for stream in listener.incoming() {
@@ -190,11 +198,12 @@ fn main() -> Result<(), P2pError> {
                     let peer_addr = tcp_stream.peer_addr().unwrap();
                     let peer_ip = peer_addr.ip().to_string();
 
-                    // Clone the Arc AGAIN for this specific incoming connection thread
                     let ts_conn = Arc::clone(&ts_listener);
+                    let secret_clone = Arc::clone(&listener_secret_ref);
                     
                     s.spawn(move || {
-                        match protocol::handshake::run_responder(&mut tcp_stream, secret_ref, display_name) {
+                        let secret = secret_clone.lock().unwrap().clone();
+                        match protocol::handshake::run_responder(&mut tcp_stream, &secret, display_name) {
                             Ok((tx_key, rx_key, peer_pub)) => {
                                 // TOFU Verification
                                 {
@@ -239,13 +248,14 @@ fn main() -> Result<(), P2pError> {
                     println!(" /list <ip>                  : Request a peer's file list");
                     println!(" /request <ip> <hex_id>      : Request a file from a peer");
                     println!(" /send <ip> <hex_id>         : Send (offer) a local file to a peer");
-                    println!(" /import <filepath>          : Add a local file to the secure vault");
-                    println!(" /export <hex_id> <filepath> : Decrypt and save a file to disk");
+                    println!(" /add <filepath>             : Add a local file to the secure vault");
                     println!(" /remove <hex_id>            : Delete a file from the secure vault");
+                    println!(" /export <hex_id> <filepath> : Decrypt and save a file to disk");
                     println!(" /view <hex_id>              : Print the contents of a text file");
                     println!(" /approve <hex_id>           : Approve a pending file request or offer");
                     println!(" /deny <hex_id>              : Deny a pending file request or offer");
                     println!(" /local_files                : Show the files currently in your vault");
+                    println!(" /rotate                     : Rotate your identity key and notify peers");
                     println!(" /quit                       : Shut down the node");
                 }
                 "/quit" | "/q" => std::process::exit(0),
@@ -270,7 +280,7 @@ fn main() -> Result<(), P2pError> {
                         println!("Usage: {} <hex_id>", command);
                     }
                 }
-                "/import" => {
+                "/add" => {
                     if let Some(filepath) = args.next() {
                         let path = std::path::Path::new(filepath);
                         match std::fs::read(path) {
@@ -278,7 +288,11 @@ fn main() -> Result<(), P2pError> {
                                 let filename = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                                 let file_size = bytes.len() as u64;
                                 let file_hash = Sha256::digest(&bytes).to_vec();
-                                let owner_fp = Sha256::digest(secret_ref.verifying_key().as_bytes()).to_vec();
+                                
+                                let owner_fp = {
+                                    let secret = my_id_secret.lock().unwrap();
+                                    Sha256::digest(secret.verifying_key().as_bytes()).to_vec()
+                                };
                                 
                                 let mut hasher = Sha256::new();
                                 hasher.update(filename.as_bytes());
@@ -299,9 +313,12 @@ fn main() -> Result<(), P2pError> {
                                 };
 
                                 // Sign the metadata
-                                if let Err(e) = sign_metadata(secret_ref, &mut metadata) {
-                                    println!("<< Failed to sign metadata: {}", e);
-                                    continue;
+                                {
+                                    let secret = my_id_secret.lock().unwrap();
+                                    if let Err(e) = sign_metadata(&*secret, &mut metadata) {
+                                        println!("<< Failed to sign metadata: {}", e);
+                                        continue;
+                                    }
                                 }
 
                                 // Write to secure storage
@@ -319,7 +336,7 @@ fn main() -> Result<(), P2pError> {
                             Err(e) => println!("<< Failed to read local file '{}': {}", filepath, e),
                         }
                     } else {
-                        println!("Usage: /import <filepath>");
+                        println!("Usage: /add <filepath>");
                     }
                 }
                 "/remove" => {
@@ -409,13 +426,14 @@ fn main() -> Result<(), P2pError> {
                         let target = format!("{}:{}", ip, port);
                         let peer_ip = ip.to_string();
 
-                        // Clone the Arc for the outgoing list request thread
                         let ts_cmd = Arc::clone(&trust_store);
+                        let secret_clone = Arc::clone(&my_id_secret);
                         
                         s.spawn(move || {
                             match TcpStream::connect(&target) {
                                 Ok(mut tcp_stream) => {
-                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                    let secret = secret_clone.lock().unwrap().clone();
+                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, &secret, display_name) {
                                         {
                                             let mut ts = ts_cmd.lock().unwrap();
                                             if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
@@ -435,33 +453,30 @@ fn main() -> Result<(), P2pError> {
                 }
                 "/request" => {
                     if let (Some(ip), Some(hex_id)) = (args.next(), args.next()) {
-                        
-                        // FIX: Look up the full file ID in the local metadata cache using the prefix
                         let full_id = {
                             let state = node_state.lock().unwrap();
                             state.metadata_cache.keys().find(|id| {
-                                // Prevent panics if an ID is less than 4 bytes long
                                 let prefix_len = std::cmp::min(4, id.len());
                                 hex::encode(&id[..prefix_len]) == hex_id
-                            }).cloned() // Clone the Vec<u8> to escape the mutex lock
+                            }).cloned()
                         };
 
                         if let Some(full_id) = full_id {
                             let target = format!("{}:{}", ip, port);
                             let peer_ip = ip.to_string();
 
-                            // Clone the Arc for the outgoing file request thread
                             let ts_cmd = Arc::clone(&trust_store);
+                            let secret_clone = Arc::clone(&my_id_secret);
                             
                             s.spawn(move || {
                                 if let Ok(mut tcp_stream) = TcpStream::connect(&target) {
-                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                    let secret = secret_clone.lock().unwrap().clone();
+                                    if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, &secret, display_name) {
                                         {
                                             let mut ts = ts_cmd.lock().unwrap();
                                             if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
                                         }
                                         let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
-                                        // Pass the actual full_id, not the zero-padded one
                                         let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::RequestFile(full_id));
                                     } else { println!("<< Handshake err") }
                                 } else { println!("<< TCP connection err") }
@@ -485,11 +500,13 @@ fn main() -> Result<(), P2pError> {
                             let target = format!("{}:{}", ip, port);
                             let peer_ip = ip.to_string();
                             let ts_cmd = Arc::clone(&trust_store);
+                            let secret_clone = Arc::clone(&my_id_secret);
 
                             s.spawn(move || {
                                 match TcpStream::connect(&target) {
                                     Ok(mut tcp_stream) => {
-                                        if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, secret_ref, display_name) {
+                                        let secret = secret_clone.lock().unwrap().clone();
+                                        if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, &secret, display_name) {
                                             {
                                                 let mut ts = ts_cmd.lock().unwrap();
                                                 if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
@@ -507,6 +524,61 @@ fn main() -> Result<(), P2pError> {
                             println!("<< Unknown file ID '{}'. Did you check '/local_files'?", hex_id);
                         }
                     } else { println!("Usage: /send <ip_address> <hex_id>"); }
+                }
+                "/rotate" => {
+                    println!("<< Initiating key rotation...");
+                    let mut csprng = rand_core::OsRng;
+                    let new_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+                    let timestamp = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+                    // 1. Generate the signed notice using the OLD key
+                    let old_key = my_id_secret.lock().unwrap().clone();
+                    let notice = match crate::protocol::verification::sign_key_rotation(&old_key, &new_key, timestamp) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            println!("<< Failed to sign rotation notice: {}", e);
+                            continue;
+                        }
+                    };
+
+                    // 2. Retrieve all known contacts to notify them
+                    let known_ips: Vec<String> = {
+                        let ts = trust_store.lock().unwrap();
+                        ts.get_known_peer_ips()
+                    };
+
+                    // 3. Broadcast the notice to all peers using the OLD key to pass the handshake
+                    for ip in known_ips {
+                        let target = format!("{}:{}", ip, port);
+                        let peer_ip = ip.clone();
+                        let notice_clone = notice.clone();
+                        let old_key_clone = old_key.clone();
+                        let display_name_clone = display_name.to_string();
+                        let ts_cmd = Arc::clone(&trust_store);
+
+                        s.spawn(move || {
+                            if let Ok(mut tcp_stream) = TcpStream::connect(&target) {
+                                if let Ok((tx_key, rx_key, peer_pub)) = protocol::handshake::run_initiator(&mut tcp_stream, &old_key_clone, &display_name_clone) {
+                                    {
+                                        let mut ts = ts_cmd.lock().unwrap();
+                                        if ts.verify_or_trust_peer(&peer_ip, &peer_pub).is_err() { return; }
+                                    }
+                                    let session = protocol::session::SecureSession::new(tcp_stream, tx_key, rx_key);
+                                    let _ = app_ref.run_peer_session(session, &peer_ip, &peer_pub, SessionAction::SendRotationNotice(notice_clone));
+                                }
+                            } else {
+                                println!("<< Peer {} is offline. Next time you connect, their TOFU may reject you.", peer_ip);
+                            }
+                        });
+                    }
+
+                    // 4. Save the new key to disk and update local memory for all FUTURE connections
+                    if let Err(e) = app_ref.storage.write_file("ed25519_identity.key", &new_key.to_bytes()) {
+                        println!("<< FATAL: Failed to save new key to vault: {}", e);
+                    } else {
+                        *my_id_secret.lock().unwrap() = new_key;
+                        println!("<< Local identity key rotated and saved successfully.");
+                    }
                 }
                 _ => println!("Unknown command. Type /help."),
             }

@@ -78,6 +78,11 @@ impl<'a> TrustStore<'a> {
         }
         None
     }
+
+    /// Helper used by the key rotation broadcast to retrieve all contacts
+    pub fn get_known_peer_ips(&self) -> Vec<String> {
+        self.db.known_peers.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]
