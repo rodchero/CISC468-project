@@ -1,6 +1,6 @@
 # CISC 468 - P2P Secure File Sharing App
 
-## Roman and Youssef
+## Roman Rodchenkov and Youssef Elmanawy
 
 # How to Run:
 
@@ -67,5 +67,5 @@
     - Put any files you want to share with other peers directly into the `shared_files_<port>` folder.
     - if you forget your password, delete the `.p2p_storage_<port>` directory. This will reset your identity, trusted contacts, and third-party metadata cache.
 - every login thereafter, use the exact same password to unlock your vault.
-- use the interactive numbered menu (1-9) to perform actions like discovering peers via mDNS, requesting files, offering files, and rotating your cryptographic keys.
+- use the interactive numbered menu (1-10) to perform actions like discovering peers via mDNS, requesting files, offering files, and rotating your cryptographic keys.
 
