@@ -2,6 +2,9 @@
 
 ## Roman Rodchenkov and Youssef Elmanawy
 
+## Report
+- [Final Report](Cross-Language%20Secure%20Peer-to-Peer%20File%20Sharing.pdf)
+
 # How to Run:
 
 ## Rust Client
