@@ -69,6 +69,5 @@ async def prompt_trust(peer_pubkey_bytes, peer_display_name) -> bool:
     fp = fingerprint(peer_pubkey_bytes)
     print(f"\nNew peer: {peer_display_name}")
     print(f"Fingerprint: {fp}")
-    # TODO: use asyncio-friendly input in the real app
     response = input("Trust this contact? [y/n]: ").strip().lower()
     return response == "y"

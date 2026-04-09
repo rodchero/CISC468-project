@@ -73,7 +73,6 @@ async def request_file_list(session, reader, writer):
     await send_app_message(session, writer, FILE_LIST_REQUEST, req)
 
     msg_type, resp = await recv_app_message(session, reader)
-    # TODO: handle unexpected message type
     return list(resp.files)
 
 
@@ -111,7 +110,6 @@ async def handle_file_request(session, reader, writer, file_manager):
 
     # Look up filename for the prompt
     _, meta = file_manager.files[file_id]
-    # TODO: make this non-blocking
     answer = input(f"Peer wants to download '{meta.filename}'. Allow? [y/n]: ").strip().lower()
 
     if answer == "y":
@@ -208,7 +206,6 @@ async def handle_file_offer(session, reader, writer, output_dir, owner_pubkey_by
     msg_type, offer = await recv_app_message(session, reader)
     meta = offer.metadata
 
-    # TODO: make this non-blocking
     answer = input(
         f"Peer wants to send you '{meta.filename}' ({meta.file_size} bytes). Accept? [y/n]: "
     ).strip().lower()

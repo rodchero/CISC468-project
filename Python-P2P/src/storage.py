@@ -77,7 +77,6 @@ class SecureStorage:
 
     def save_metadata_cache(self, cache_dict):
         import json
-        # TODO: serialize FileMetadata protobufs properly
         self.save("metadata_cache", json.dumps(cache_dict).encode())
 
     def load_metadata_cache(self):
